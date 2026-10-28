@@ -10,21 +10,23 @@ Sources: [codec screen](../../evidence/codec-screen.json) · [packed quality](..
 
 Same BF16 source/target tensor set, 128×2048 calibration windows and 64×2048 held-out WikiText windows (131,008 scored tokens). Head and embeddings were excluded from the low-bit target subset. Values are fake-quantized weights evaluated through the HF model; they are not the K4-head release-artifact rows. Lower KL means closer teacher distribution, not higher task accuracy. KL is top-128-plus-rest coarsened KL.
 
-| Original quant label | Target bpw | PPL | Teacher KL | Top-1 agreement |
+Sorted by target bpw (ascending), breaking ties by lower PPL. **Bold** marks the column winner among quantized rows; ↓ lower is better, ↑ higher is better. BF16 is the unquantized reference.
+
+| Original quant label | Target bpw ↓ | PPL ↓ | Teacher KL ↓ | Top-1 agreement ↑ |
 |---|---:|---:|---:|---:|
-| bf16 | 16.000000 | 9.02360 | reference | reference |
-| gptq:4 | 4.250000 | 9.12474 | 0.065814 | 0.89984 |
-| htr:3 | 3.003299 | 9.32047 | 0.082963 | 0.88609 |
-| gptq:3 | 3.250000 | 9.67354 | 0.237551 | 0.79979 |
-| ldlq_scalar_rht:3 | 3.003299 | 9.41058 | 0.138338 | 0.84702 |
-| htr:4 | 4.003299 | 9.06851 | 0.028893 | 0.93634 |
 | htr:2 | 2.003299 | 10.54739 | 0.276500 | 0.77959 |
-| Q4_K | 4.500000 | 8.99879 | 0.041131 | 0.92177 |
-| IQ4_XS | 4.250000 | 8.88564 | 0.056440 | 0.90846 |
-| Q3_K | 3.437500 | 10.23806 | 0.212514 | 0.80948 |
-| IQ3_XXS | 3.062500 | 9.29002 | 0.185692 | 0.82051 |
-| Q2_K | 2.625000 | 9.96638 | 0.373139 | 0.74590 |
 | IQ2_XS | 2.312500 | 10.89549 | 0.450601 | 0.71592 |
+| Q2_K | 2.625000 | 9.96638 | 0.373139 | 0.74590 |
+| htr:3 | 3.003299 | 9.32047 | 0.082963 | 0.88609 |
+| ldlq_scalar_rht:3 | 3.003299 | 9.41058 | 0.138338 | 0.84702 |
+| IQ3_XXS | 3.062500 | 9.29002 | 0.185692 | 0.82051 |
+| gptq:3 | 3.250000 | 9.67354 | 0.237551 | 0.79979 |
+| Q3_K | 3.437500 | 10.23806 | 0.212514 | 0.80948 |
+| htr:4 | 4.003299 | 9.06851 | **0.028893** | **0.93634** |
+| IQ4_XS | 4.250000 | **8.88564** | 0.056440 | 0.90846 |
+| gptq:4 | 4.250000 | 9.12474 | 0.065814 | 0.89984 |
+| Q4_K | 4.500000 | 8.99879 | 0.041131 | 0.92177 |
+| bf16 | 16.000000 | 9.02360 | reference | reference |
 
 HTR4 in this screen had 56.10% lower teacher KL and 5.80% fewer bits on the target tensors than the local GPTQ4-g128 control. Several scalar/GGML controls have lower PPL despite higher teacher KL; both columns are shown. K3 and K4 provide different size/fidelity tradeoffs.
 
