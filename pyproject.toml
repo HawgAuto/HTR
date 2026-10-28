@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "halo-trellis"
+version = "0.1.0rc1"
+description = "HTR: Halo Trellis weight quantization and encoder for Strix Halo research"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "HawgAuto contributors"}]
+dependencies = ["torch>=2.6", "safetensors>=0.5", "transformers>=5.10.2"]
+
+[project.urls]
+Repository = "https://github.com/HawgAuto/HTR"
+
+[project.scripts]
+htr-quantize = "htr.quantize:main"
+htr-lmhead = "htr.lmhead:main"
+
+[project.entry-points."vllm.general_plugins"]
+htr = "htr.vllm_plugin:register"
+
+[tool.setuptools.packages.find]
+include = ["htr*"]
+
+[tool.setuptools.package-data]
+htr = ["csrc/*.cpp", "csrc/*.cu"]

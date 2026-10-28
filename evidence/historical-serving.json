@@ -1,0 +1,195 @@
+{
+  "source_file_sha256": "a9bfdd3e516b91f7485a75ccd0df53c6e48b3d62cdeac7d269473a7598b453f9",
+  "epoch": "E10 final table, 2026-10-16",
+  "hardware": "AMD Radeon 8060S / gfx1151; 128GB-class shared-memory host",
+  "runtime": "HaloLoom vLLM v0.1.5-qwen38-quickstart-r2 with then-current HTR overlay; source snapshot in this repository has not been requalified against these numbers",
+  "conditions": {
+    "single_sequence": true,
+    "speculation": false,
+    "prompt_tokens_generation": 16,
+    "generated_tokens": 256,
+    "prefill_tokens": 2048,
+    "prefill_output_tokens": 1,
+    "repetitions": 3,
+    "prefix_cache": false,
+    "graphs": true,
+    "model_context_limit": 2560
+  },
+  "metric_note": "tg_tok_s is completion count / in-process llm.generate wall time INCLUDING short prompt prefill; pp_tok_s includes the one-token completion. Neither is a server-only decode timer. Rows retain all repetitions.",
+  "rows": [
+    {
+      "label": "mimo9b-bf16-final",
+      "eager": false,
+      "load_s": 48.656975746154785,
+      "ppl": 9.152306405261536,
+      "ppl_tokens": 32752,
+      "nwin": 16,
+      "seqlen": 2048,
+      "sampling": {
+        "temperature": 0.6,
+        "top_p": 0.95,
+        "top_k": 20,
+        "min_p": 0.0,
+        "presence_penalty": 0.0,
+        "repetition_penalty": 1.0
+      },
+      "tg_tok_s": [
+        13.511597392782315,
+        13.544781425614396,
+        13.558421691983195
+      ],
+      "pp_tok_s": [
+        1643.581019498683,
+        1639.1268848433037,
+        1640.7283040202924
+      ],
+      "median_wall_generation_tok_s": 13.544781425614396,
+      "median_prompt_wall_tok_s": 1640.7283040202924
+    },
+    {
+      "label": "mimo9b-htr4-final",
+      "eager": false,
+      "load_s": 57.24840211868286,
+      "ppl": 9.206132004398413,
+      "ppl_tokens": 32752,
+      "nwin": 16,
+      "seqlen": 2048,
+      "sampling": {
+        "temperature": 0.6,
+        "top_p": 0.95,
+        "top_k": 20,
+        "min_p": 0.0,
+        "presence_penalty": 0.0,
+        "repetition_penalty": 1.0
+      },
+      "tg_tok_s": [
+        33.710585753947115,
+        33.893164522887304,
+        33.90151250677759
+      ],
+      "pp_tok_s": [
+        1432.8517189013764,
+        1450.3013225700684,
+        1456.8446086163094
+      ],
+      "median_wall_generation_tok_s": 33.893164522887304,
+      "median_prompt_wall_tok_s": 1450.3013225700684
+    },
+    {
+      "label": "mimo9b-htr3-final",
+      "eager": false,
+      "load_s": 56.00023579597473,
+      "ppl": 9.364288567258393,
+      "ppl_tokens": 32752,
+      "nwin": 16,
+      "seqlen": 2048,
+      "sampling": {
+        "temperature": 0.6,
+        "top_p": 0.95,
+        "top_k": 20,
+        "min_p": 0.0,
+        "presence_penalty": 0.0,
+        "repetition_penalty": 1.0
+      },
+      "tg_tok_s": [
+        38.81829605633838,
+        38.95061630047911,
+        38.86883969901479
+      ],
+      "pp_tok_s": [
+        1459.2286197171998,
+        1470.7376776412955,
+        1469.1893915850553
+      ],
+      "median_wall_generation_tok_s": 38.86883969901479,
+      "median_prompt_wall_tok_s": 1469.1893915850553
+    },
+    {
+      "label": "mimo9b-htr4-lmh4-final",
+      "eager": false,
+      "load_s": 55.17989659309387,
+      "ppl": 9.209395946275322,
+      "ppl_tokens": 32752,
+      "nwin": 16,
+      "seqlen": 2048,
+      "sampling": {
+        "temperature": 0.6,
+        "top_p": 0.95,
+        "top_k": 20,
+        "min_p": 0.0,
+        "presence_penalty": 0.0,
+        "repetition_penalty": 1.0
+      },
+      "tg_tok_s": [
+        42.485750655433016,
+        42.48119543449187,
+        42.64954978415092
+      ],
+      "pp_tok_s": [
+        1467.4748702838006,
+        1458.0560573354783,
+        1467.0939077052565
+      ],
+      "median_wall_generation_tok_s": 42.485750655433016,
+      "median_prompt_wall_tok_s": 1467.0939077052565
+    },
+    {
+      "label": "mimo9b-htr3-lmh4-final",
+      "eager": false,
+      "load_s": 55.580036640167236,
+      "ppl": 9.367120370485976,
+      "ppl_tokens": 32752,
+      "nwin": 16,
+      "seqlen": 2048,
+      "sampling": {
+        "temperature": 0.6,
+        "top_p": 0.95,
+        "top_k": 20,
+        "min_p": 0.0,
+        "presence_penalty": 0.0,
+        "repetition_penalty": 1.0
+      },
+      "tg_tok_s": [
+        49.213863514559826,
+        50.79095296852025,
+        50.84822464824363
+      ],
+      "pp_tok_s": [
+        1289.9779203355229,
+        1321.5408009213625,
+        1320.1071511010146
+      ],
+      "median_wall_generation_tok_s": 50.79095296852025,
+      "median_prompt_wall_tok_s": 1320.1071511010146
+    },
+    {
+      "label": "mimo9b-htr3-lmh3-final",
+      "eager": false,
+      "load_s": 57.031383752822876,
+      "ppl": 9.39985342269518,
+      "ppl_tokens": 32752,
+      "nwin": 16,
+      "seqlen": 2048,
+      "sampling": {
+        "temperature": 0.6,
+        "top_p": 0.95,
+        "top_k": 20,
+        "min_p": 0.0,
+        "presence_penalty": 0.0,
+        "repetition_penalty": 1.0
+      },
+      "tg_tok_s": [
+        51.25010513809425,
+        51.97386876772903,
+        51.83352937297534
+      ],
+      "pp_tok_s": [
+        1422.4798221605165,
+        1424.966497604744,
+        1416.841506679741
+      ],
+      "median_wall_generation_tok_s": 51.83352937297534,
+      "median_prompt_wall_tok_s": 1422.4798221605165
+    }
+  ]
+}

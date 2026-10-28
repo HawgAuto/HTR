@@ -1,0 +1,86 @@
+{
+  "scope": "HTR source snapshot; private history omitted. No inference requalification implied.",
+  "upstream_references": {
+    "exlr8": "80aa7e15aad38e94877e561aff5c47c5335c506d",
+    "exllamav3": "cdc785db89e263e65e5849cb53e1ada156411414"
+  },
+  "files": [
+    {
+      "path": "htr/__init__.py",
+      "imported_sha256": "852504b25d8b4d4e2d5e22673b0c3e8603cad8bcbb5f74a343b434ebbf162dde",
+      "packaged_sha256": "852504b25d8b4d4e2d5e22673b0c3e8603cad8bcbb5f74a343b434ebbf162dde"
+    },
+    {
+      "path": "htr/wire.py",
+      "imported_sha256": "546d60b7f36057a4077d7dd7f8f546e433b6f18ffc2276d79f3610cd6d3f1537",
+      "packaged_sha256": "546d60b7f36057a4077d7dd7f8f546e433b6f18ffc2276d79f3610cd6d3f1537"
+    },
+    {
+      "path": "htr/encode.py",
+      "imported_sha256": "89331ce201e3f93092f1554719bac41b5f227131976e0cd549b3f2206722ec28",
+      "packaged_sha256": "4b436918dc41df63643cb20614c3e402c7860862034f01ac4593c19104d226ec"
+    },
+    {
+      "path": "htr/vit_v1.py",
+      "imported_sha256": "5c6eb5886484f1b172520fded45946817d993a4cef9e0a1c9ec8182d61d0b793",
+      "packaged_sha256": "5c6eb5886484f1b172520fded45946817d993a4cef9e0a1c9ec8182d61d0b793"
+    },
+    {
+      "path": "htr/vit_v2.py",
+      "imported_sha256": "ab62f69331ad0058d45741d52c8aafa0d8dc45d64baf7d9b047d6c4e99189a97",
+      "packaged_sha256": "ab62f69331ad0058d45741d52c8aafa0d8dc45d64baf7d9b047d6c4e99189a97"
+    },
+    {
+      "path": "htr/quantize.py",
+      "imported_sha256": "7f5694cef49acf36abd1c8e4b07238b7ef87ae55f31cab95d7c4477dd8849bcd",
+      "packaged_sha256": "ae475071188dc9e88285d7102458c4ea993b760026ba4c4ea55fd0658d0390a2"
+    },
+    {
+      "path": "htr/lmhead.py",
+      "imported_sha256": "146f57e0b2815c21c3ddae506b3d695221dc2c8ffef12caefc57a67128f8ff76",
+      "packaged_sha256": "92825e820a7ae8244c1bedfccb3484b15c17cc1ea1bdad1c59d6d3a1ef2a2806"
+    },
+    {
+      "path": "htr/encode_q38.py",
+      "imported_sha256": "15563adee2e90e2174e5b2e03909b06fef560a988a395b7716c64f603752d623",
+      "packaged_sha256": "621bd30af5ac17348ff8f5120270cee32b66ba21729612efc3b4f859e4982358"
+    },
+    {
+      "path": "htr/ops.py",
+      "imported_sha256": "76c7b70a4d4263c9915c8883d84f07f7406613319e64b63db2c5c69ad2373f0e",
+      "packaged_sha256": "76c7b70a4d4263c9915c8883d84f07f7406613319e64b63db2c5c69ad2373f0e"
+    },
+    {
+      "path": "htr/vllm_plugin.py",
+      "imported_sha256": "9ad603007b89c6babe8d2243ac9b1c01a5292417255b5dfbd2969412864c86e6",
+      "packaged_sha256": "9ad603007b89c6babe8d2243ac9b1c01a5292417255b5dfbd2969412864c86e6"
+    },
+    {
+      "path": "htr/csrc/htr_kernels.cpp",
+      "imported_sha256": "ae08b45113e8731bb05efca3b62f8681e67661bff394393652867687e49e4947",
+      "packaged_sha256": "ae08b45113e8731bb05efca3b62f8681e67661bff394393652867687e49e4947"
+    },
+    {
+      "path": "htr/csrc/htr_kernels.cu",
+      "imported_sha256": "91b6a9985b8d29f78a4efebe295dd1a822b9db0be15d2711a6cc8d7e0b100eff",
+      "packaged_sha256": "91b6a9985b8d29f78a4efebe295dd1a822b9db0be15d2711a6cc8d7e0b100eff"
+    },
+    {
+      "path": "htr/moe_encode.py",
+      "imported_sha256": "000fe9cae3eed944a02e47d1ad26d5fe297c5cdc71ac4f55364ac0f6fb360a9b",
+      "packaged_sha256": "12acc920a1590599b7f0b9b8c2b6060a234c61552ecdcee75228ec2e7be2445d"
+    },
+    {
+      "path": "htr/moe_io.py",
+      "imported_sha256": "8096f1a9edf44bc5143af2a3f0bc1560968fcca20220f2e0e2ebc88d052cfa65",
+      "packaged_sha256": "a4e1ac48d55329e6ce8765630a5a74d04d4318ef5f2361d84e4c113e46138955"
+    }
+  ],
+  "adaptations": [
+    "In-package reference Viterbi copied from HTR codec-screen implementation",
+    "Removed machine-specific calibration/model defaults; required explicit model/calibration arguments",
+    "MoE reference checkpoint made explicit; original encode numerics retained",
+    "Setuptools package and vLLM general-plugin entry point",
+    "CPU packing/reference/serialization tests and public documentation"
+  ]
+}

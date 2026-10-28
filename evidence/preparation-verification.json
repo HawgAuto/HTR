@@ -1,0 +1,17 @@
+{
+  "cpu_suite": "python -m unittest discover -s tests -v",
+  "tests": 7,
+  "result": "PASS",
+  "duration_seconds": 2.809,
+  "gpu_devices_hidden": true,
+  "claims": [
+    "CPU W1 bitstream oracle K2-K5",
+    "CPU reference tail-biting path",
+    "CPU matrix encode/safetensors/reopen/decode"
+  ],
+  "not_claimed": [
+    "Native GPU compilation/execution of this package",
+    "Fresh full-model quality or throughput",
+    "Complete Qwen3.8 serving runtime"
+  ]
+}

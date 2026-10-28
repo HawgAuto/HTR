@@ -1,0 +1,72 @@
+[
+  {
+    "file": "eval-mimo9b-htr4-lmh4.json",
+    "source_sha256": "e060d67e9ef5972ee3882ee24201c2c034a1879c0b4ba12a7236a5b40e217a9b",
+    "rows": [
+      {
+        "label": "bf16",
+        "ppl": 9.019483896440386,
+        "tokens": 131008
+      },
+      {
+        "label": "bf16-repeat",
+        "ppl": 9.019483896440386,
+        "tokens": 131008,
+        "kl": 0.0,
+        "top1_agree": 1.0
+      },
+      {
+        "label": "htr4-lmh4-packed",
+        "kind": "htr",
+        "htr_modules": 201,
+        "ppl": 9.047605819145726,
+        "tokens": 131008,
+        "kl": 0.03052937423944124,
+        "top1_agree": 0.9297371152906693
+      },
+      {
+        "label": "htr4-lmh4-fake",
+        "kind": "hf",
+        "ppl": 9.048044950181826,
+        "tokens": 131008,
+        "kl": 0.030585700716108128,
+        "top1_agree": 0.9292180630190523
+      }
+    ]
+  },
+  {
+    "file": "eval-mimo9b-htr3-lmh4.json",
+    "source_sha256": "9ef797fd7f32280a0e79d2528cc7ae57bfe4b847968eb718028df5588af2376f",
+    "rows": [
+      {
+        "label": "bf16",
+        "ppl": 9.019483896440386,
+        "tokens": 131008
+      },
+      {
+        "label": "bf16-repeat",
+        "ppl": 9.019483896440386,
+        "tokens": 131008,
+        "kl": 0.0,
+        "top1_agree": 1.0
+      },
+      {
+        "label": "htr3-lmh4-packed",
+        "kind": "htr",
+        "htr_modules": 201,
+        "ppl": 9.223103412554984,
+        "tokens": 131008,
+        "kl": 0.08337014601995843,
+        "top1_agree": 0.8828544821690278
+      },
+      {
+        "label": "htr3-lmh4-fake",
+        "kind": "hf",
+        "ppl": 9.226922653337759,
+        "tokens": 131008,
+        "kl": 0.08344726505428625,
+        "top1_agree": 0.8827247191011236
+      }
+    ]
+  }
+]

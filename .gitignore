@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*.so
+*.o
+*.egg-info/
+build/
+dist/
+.venv/
+.pytest_cache/
+.cache/
+*.pt
+*.safetensors
+*.gguf
+*.log
+htr/csrc/build*/
+htr/csrc/vit*/
