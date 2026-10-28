@@ -20,6 +20,8 @@ The same-budget comparison shows HTR improving teacher fidelity against a scalar
 
 Source: [`codec-screen.json`](../evidence/codec-screen.json). Percentage reductions are calculated from the full-precision rows, not the rounded display values.
 
+![All twelve quantized codec-screen observations, plotted by target bits per weight and coarsened teacher KL.](../media/codec-fidelity.png)
+
 ## 2. Low overhead beyond the nominal bit width
 
 W1 stores a K-bit stream plus one FP16 scale per output row and packed input/output signs. For an `m × n` matrix:
@@ -61,6 +63,8 @@ The historical Radeon 8060S test measured one sequence, no speculation, prefix c
 The generation benefit is a measured execution result, not an inference from file size. It also shows why HTR treats decode and prefill separately: the prompt-wall rates fell by **10.58%** and **19.54%** for these two configurations, respectively.
 
 Both metrics include the complete in-process `generate` call: generation includes its short prompt, and prompt-wall includes its one-token completion. They are not pure device timers or HTTP throughput. The [case study](case-studies/dense-9b.md#radeon-8060s-serving-e10) retains every configuration and links every repetition; [`historical-serving.json`](../evidence/historical-serving.json) records the runtime and sampling settings.
+
+![All six historical serving configurations, with generation and prompt-wall rates separated. Bars show medians and whiskers show observed min–max across three repetitions.](../media/serving-tradeoff.png)
 
 ## 5. An executable, inspectable reference
 

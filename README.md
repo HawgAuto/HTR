@@ -1,4 +1,4 @@
-![Halo Trellis — HTR](media/hero.png)
+![Halo Trellis: a copper path woven through a sculptural trellis halo. More model. Fewer weight bytes.](media/hero.png)
 
 # HTR — Halo Trellis
 
@@ -19,6 +19,8 @@ The goal is practical: **more model in memory, less weight traffic per generated
 - **Packed execution for small batches.** HIP kernels reconstruct weights as they consume them, keeping the low-bit representation on the generation path instead of maintaining a full BF16 weight expansion.
 - **An inspectable toolchain.** CPU reference code, CUDA/HIP encoder sources, checkpoint tools, native kernel sources, format documentation, tests, and saved experimental data are all here.
 
+![HTR pipeline: condition weights using calibration and Hadamard transforms, encode with block-LDLQ and Viterbi, then reconstruct for GEMV or GEMM.](media/method-map.png)
+
 ## Findings at a glance
 
 The measurements below come from our published [dense 9B case study](docs/case-studies/dense-9b.md). They illustrate the design's benefits with explicit controls and workloads.
@@ -31,6 +33,10 @@ The measurements below come from our published [dense 9B case study](docs/case-s
 | Faster generation on Radeon 8060S | K4/K4-head and K3/K4-head achieved **3.14× / 3.75×** the BF16 wall-generation rate in the recorded single-sequence test | Fewer weight bytes translated into an end-to-end generation benefit on the target hardware |
 
 Teacher KL measures distribution fidelity, not task accuracy; target bpw covers the quantized subset. The serving results are historical, use a 16-token prompt and 256 output tokens, and include prompt time. Prefill was slower in that test. [Full conditions, all controls, repetitions, and current verification scope](docs/EVIDENCE.md) are published alongside the results.
+
+![Teacher fidelity versus target bitrate for all twelve quantized codec-screen rows. HTR is highlighted; the exact controls and values remain in the linked evidence.](media/codec-fidelity.png)
+
+[Explore the chart and full measurements →](docs/EVIDENCE.md)
 
 ## Where HTR fits best
 
@@ -71,4 +77,4 @@ The tests run on CPU and include a real matrix encode → safetensors → reopen
 
 HTR builds on work by the exlr8, ExLlamaV3/EXL3, QTIP, QuIP/QuIP#, and GPTQ/LDLQ authors, alongside the AMD and open-source inference communities. Our [acknowledgments](docs/LINEAGE.md) document that lineage and the HTR-specific engineering in detail.
 
-HTR code is [MIT licensed](LICENSE). [Third-party notices](THIRD_PARTY_NOTICES.md) and source-model licenses retain their own scope.
+HTR code is [MIT licensed](LICENSE). [Third-party notices](THIRD_PARTY_NOTICES.md) and source-model licenses retain their own scope. [Artwork, chart sources, and typography](media/README.md).

@@ -1,0 +1,209 @@
+{
+  "scope": "Offline visualizations of retained experiments, not new measurements.",
+  "source_sha256": {
+    "codec-screen.json": "8639fa7b8f8da757477655795075682648f39076c77c0a5fb43ea0e96a1c9225",
+    "historical-serving.json": "145b89607c088354036625e2919c44f826bd7e113b6e63b9afd94365c22eab26"
+  },
+  "codec": [
+    {
+      "label": "gptq:4",
+      "target_bpw": 4.25,
+      "teacher_kl": 0.06581381034664718,
+      "pixel_xy": [
+        1357.3275862068965,
+        782.6048086186881
+      ]
+    },
+    {
+      "label": "gptq:3",
+      "target_bpw": 3.25,
+      "teacher_kl": 0.23755127450694208,
+      "pixel_xy": [
+        862.4999999999999,
+        593.6935980423636
+      ]
+    },
+    {
+      "label": "ldlq_scalar_rht:3",
+      "target_bpw": 3.003299453883495,
+      "teacher_kl": 0.1383383710849093,
+      "pixel_xy": [
+        740.4257642492465,
+        702.8277918065997
+      ]
+    },
+    {
+      "label": "Q4_K",
+      "target_bpw": 4.5,
+      "teacher_kl": 0.04113073452659275,
+      "pixel_xy": [
+        1481.0344827586207,
+        809.756192020748
+      ]
+    },
+    {
+      "label": "IQ4_XS",
+      "target_bpw": 4.25,
+      "teacher_kl": 0.05643953159487882,
+      "pixel_xy": [
+        1357.3275862068965,
+        792.9165152456333
+      ]
+    },
+    {
+      "label": "Q3_K",
+      "target_bpw": 3.4375,
+      "teacher_kl": 0.2125135856427154,
+      "pixel_xy": [
+        955.280172413793,
+        621.2350557930131
+      ]
+    },
+    {
+      "label": "IQ3_XXS",
+      "target_bpw": 3.0625,
+      "teacher_kl": 0.18569203417768232,
+      "pixel_xy": [
+        769.7198275862069,
+        650.7387624045494
+      ]
+    },
+    {
+      "label": "Q2_K",
+      "target_bpw": 2.625,
+      "teacher_kl": 0.3731393098947649,
+      "pixel_xy": [
+        553.2327586206895,
+        444.5467591157586
+      ]
+    },
+    {
+      "label": "IQ2_XS",
+      "target_bpw": 2.3125,
+      "teacher_kl": 0.4506014477758217,
+      "pixel_xy": [
+        398.5991379310344,
+        359.33840744659614
+      ]
+    },
+    {
+      "label": "htr:3",
+      "target_bpw": 3.003299453883495,
+      "teacher_kl": 0.08296307756892635,
+      "pixel_xy": [
+        740.4257642492465,
+        763.740614674181
+      ]
+    },
+    {
+      "label": "htr:4",
+      "target_bpw": 4.003299453883495,
+      "teacher_kl": 0.0288928259595406,
+      "pixel_xy": [
+        1235.2533504561434,
+        823.2178914445053
+      ]
+    },
+    {
+      "label": "htr:2",
+      "target_bpw": 2.003299453883495,
+      "teacher_kl": 0.2764995844700771,
+      "pixel_xy": [
+        245.59817804235004,
+        550.8504570829152
+      ]
+    }
+  ],
+  "serving": [
+    {
+      "label": "mimo9b-bf16-final",
+      "wall_generation_tok_s": 13.544781425614396,
+      "prompt_wall_tok_s": 1640.7283040202924,
+      "generation_repetitions": [
+        13.511597392782315,
+        13.544781425614396,
+        13.558421691983195
+      ],
+      "prompt_repetitions": [
+        1643.581019498683,
+        1639.1268848433037,
+        1640.7283040202924
+      ]
+    },
+    {
+      "label": "mimo9b-htr4-final",
+      "wall_generation_tok_s": 33.893164522887304,
+      "prompt_wall_tok_s": 1450.3013225700684,
+      "generation_repetitions": [
+        33.710585753947115,
+        33.893164522887304,
+        33.90151250677759
+      ],
+      "prompt_repetitions": [
+        1432.8517189013764,
+        1450.3013225700684,
+        1456.8446086163094
+      ]
+    },
+    {
+      "label": "mimo9b-htr3-final",
+      "wall_generation_tok_s": 38.86883969901479,
+      "prompt_wall_tok_s": 1469.1893915850553,
+      "generation_repetitions": [
+        38.81829605633838,
+        38.95061630047911,
+        38.86883969901479
+      ],
+      "prompt_repetitions": [
+        1459.2286197171998,
+        1470.7376776412955,
+        1469.1893915850553
+      ]
+    },
+    {
+      "label": "mimo9b-htr4-lmh4-final",
+      "wall_generation_tok_s": 42.485750655433016,
+      "prompt_wall_tok_s": 1467.0939077052565,
+      "generation_repetitions": [
+        42.485750655433016,
+        42.48119543449187,
+        42.64954978415092
+      ],
+      "prompt_repetitions": [
+        1467.4748702838006,
+        1458.0560573354783,
+        1467.0939077052565
+      ]
+    },
+    {
+      "label": "mimo9b-htr3-lmh4-final",
+      "wall_generation_tok_s": 50.79095296852025,
+      "prompt_wall_tok_s": 1320.1071511010146,
+      "generation_repetitions": [
+        49.213863514559826,
+        50.79095296852025,
+        50.84822464824363
+      ],
+      "prompt_repetitions": [
+        1289.9779203355229,
+        1321.5408009213625,
+        1320.1071511010146
+      ]
+    },
+    {
+      "label": "mimo9b-htr3-lmh3-final",
+      "wall_generation_tok_s": 51.83352937297534,
+      "prompt_wall_tok_s": 1422.4798221605165,
+      "generation_repetitions": [
+        51.25010513809425,
+        51.97386876772903,
+        51.83352937297534
+      ],
+      "prompt_repetitions": [
+        1422.4798221605165,
+        1424.966497604744,
+        1416.841506679741
+      ]
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+Create a spectacular high-end editorial brand key visual for Halo Trellis, an open-source low-bit neural-weight quantization project for AMD Strix Halo. This is ART DIRECTION, not a circuit diagram or real product photograph.
+
+ZONES: Wide landscape. The leftmost 43% is restrained, very dark graphite negative space reserved for typography added later. Put the main sculptural object in the right 55%, centered around x=73%, y=49%. Keep the important object inside the central 70% of image height, leaving quiet top/bottom crop-safe margins. The structure can just kiss the right edge. No border and no UI panels.
+
+LABELS: No text whatsoever. No letters, numbers, watermarks, labels, logos or pseudo-writing. Exact project/model typography will be typeset separately. Concepts to express visually: trellis, compact information, selected paths, precision.
+
+COLORS: Near-black graphite #101416, porcelain-silver #EAE6DD, cold mineral cyan #8ACFCE, and exquisite hot copper/ember #FF8148 highlights. Avoid purple gradients, rainbow RGB lights and glossy blue generic AI imagery. Color values and names are instructions, never visible lettering.
+
+STYLE: Tangible precision-engineered computational sculpture; macro product photography blended with avant-garde scientific editorial art. Fine machined filaments, extremely clean lattice topology, subtle brushed-metal texture, realistic reflections, delicate rim light and controlled shallow depth of field. Sophisticated, tactile, dimensional, ambitious. Black background stays mostly flat; light comes from the sculpture, not a busy cosmic scene. Rich contrast but preserve beautiful shadow details. No people, robots, brains, laptops, actual GPUs, badges or neon cyberpunk city. Clean composition with generous negative space. Not a generic stock render.
+
+ASPECT: 2:1 panoramic composition, crop-safe within a landscape canvas. Make an actual beautiful finished visual, not a mood board.
+
+FOCAL OBJECT: One extraordinary tilted toroidal halo woven from thousands of hair-fine silver/graphite trellis filaments, like a mathematically precise woven saddle surface folded into a loop. The opening is visible. It has both disciplined structure and sensuous curvature, not a donut of solid metal. A handful of selected copper-orange filaments travel continuously through the lattice, while most branches remain cool silver/cyan. The loop narrows into a compressed intricate strand near its lower-right edge, suggesting information condensed without losing the underlying pattern. Dramatic asymmetric three-quarter perspective, sculptural and iconic. This singular woven halo must be the memorable brand symbol. The silhouette is large and legible at banner size, not a dense microscopic tangle.

@@ -4,6 +4,8 @@ HTR co-designs low-bit weight storage, calibration-aware encoding, and GPU execu
 
 This document explains the design from activation statistics to kernel behavior. See [findings and evidence](EVIDENCE.md) for measured outcomes and [acknowledgments](LINEAGE.md) for the research and engineering lineage.
 
+![Conceptual HTR pipeline: condition, encode, and execute.](../media/method-map.png)
+
 ## 1. What problem are we solving?
 
 At low batch size, an integrated GPU often spends much of a decode step reading weights from shared memory. Reducing the stored bytes can reduce that traffic and let a larger checkpoint fit. But it helps only if decoding the compressed representation, rotating activations, and scheduling the work do not consume the savings.
