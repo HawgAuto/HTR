@@ -1,29 +1,32 @@
-# Release status: source preview versus model release
+# HTR component status
 
-## Source preview v0.1.0rc1
+## v0.1.0rc1: codec and encoder source preview
 
-This repository packages the existing HTR encoder/codec and an experimental packed-linear integration. Its private-history source tree was not pushed. The imported snapshot is recorded by file hash; packaging changes remove machine-specific defaults, add the missing in-package PyTorch reference Viterbi, make MoE reference inputs explicit, and add packaging metadata/tests. No numerical algorithm change is intended.
+The release packages HTR's W1 codec, reference encoder, accelerated encoder sources, checkpoint tools, and experimental packed-linear integration. The [source manifest](../provenance/source-snapshot.json) records imported and packaged file hashes; the [prerelease](https://github.com/HawgAuto/HTR/releases/tag/v0.1.0-rc.1) provides an installable source wheel and checksum.
 
-Fresh CPU verification covers independent bitstream decoding for K2–K5, sign convention, Hadamard inversion, self-contained reference Viterbi with circular-state checks, and matrix encode → safetensors → reopen → exact decoded reconstruction. Historical full-model checks are retained separately in `evidence/`; they are not represented as reruns of this package.
+| Component | Included | Verified boundary |
+|---|---|---|
+| W1 packing, signs, transforms, reference decoder | Python source and wire specification | CPU tests with an independent K2–K5 bitstream oracle |
+| Reference Viterbi and matrix encoder | Self-contained PyTorch implementation | Circular-state checks and real encode → safetensors → reopen → exact decoded reconstruction |
+| Python package and CLI entry points | Installable wheel, module commands, vLLM plugin registration | Isolated installation and CLI help checks; anonymous clone/download verification |
+| Accelerated encoders and packed-linear kernels | CUDA/HIP encoder source, HIP inference source | Source included; native execution of this distributable snapshot has a separate qualification boundary |
+| Model conversion and architecture adapters | Dense/head tools and specialized dense/expert adapters | Interfaces and intermediate artifacts documented in [usage](USAGE.md) and [adapters](ADAPTERS.md) |
+| Experimental vLLM integration | Plugin and consuming-source snapshot | Complete model/runtime qualification remains separate from the CPU package tests |
 
-CUDA/HIP compilation, the packaged plugin's native execution and the complete model paths have not been rerun in this preparation session. No production service or competing GPU job was changed. The source preview is not the full optimized Qwen3.8 engine, not a turnkey image, and not a release announcement for unfinished weights.
+The seven CPU tests exercise the shipped reference and packaging. [Saved model experiments](EVIDENCE.md) provide fidelity and performance evidence for their recorded artifacts/runtimes, rather than a fresh benchmark of the source wheel.
 
-## MiMo-9B model package
+## Native runtime checklist
 
-Two accepted candidates are being staged with complete shards, tokenizer/config files, the model card, hero, source revision, checksums and evidence. Archive symlinks are resolved within the verified archive; the Hub payload contains actual files rather than paths to a private base checkpoint.
+An end-to-end deployment needs:
 
-Remaining public-release gates: exact remote weight hashes/coverage, finalized runtime/source/image binding, a release-layout native smoke, and public-last verification. The intended model repository remains private during that process.
+1. A complete checkpoint with explicit widths, retained-precision tensors, layout identity, and index coverage.
+2. Matching loader, native kernels, model adapters, and a pinned compatible runtime build.
+3. Native checks of the published checkpoint layout through the actual launch path.
+4. Memory accounting that separates weights, auxiliary tensors, KV cache, and runtime workspace.
+5. Fidelity/task checks and separate prefill, generation, and full-request measurements under stated conditions.
 
-## Qwen3.8-Flash-Next model package
+Model weights, calibration datasets, and deployment images are independently versioned artifacts. Their release-specific inventory and launch instructions belong with those artifacts; this repository documents the reusable HTR implementation.
 
-The active qualification session owns the final model/runtime selection. Current intended policy is K5 selected dense trunk, K4 output head, K4 routed experts, separate GPTQ8-HC hyperconnections and retained auxiliary precision. Preparation does not re-open that width decision.
+## Source packaging and documentation
 
-The staged card/hero and upload contract must be finalized only after receiving:
-
-1. Frozen complete checkpoint inventory, source revisions and hashes; exact HC, routed-expert, PLE and optional draft dependencies.
-2. The accepted runtime source commit, full overlay closure, built/tested image digest and launch entry point.
-3. Actual final checkpoint/PLE/draft sizes; startup weights/KV/runtime allocations labeled separately from total peak/minimum RAM.
-4. Final matched prefill, generation/wall and task/fidelity evidence with sampling/context/batch/speculation conditions.
-5. Successful checks through the published-layout loader and actual launch path.
-
-The staged Qwen card does not invent final speed, quality, download size, image tags or commands. No mutable live campaign file is uploaded as a final model simply to fill the repository.
+Packaging added the in-package reference Viterbi, explicit input paths, setuptools metadata, and CPU tests while preserving the imported encoder numerics. The documentation refresh reorganizes the findings and moves model-specific tables into a case study. Encoder source, raw evidence, original tests, source provenance, acknowledgments, and license notices remain unchanged by that editorial pass.

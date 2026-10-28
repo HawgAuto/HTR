@@ -1,12 +1,14 @@
 # HTR methodology: Halo Trellis
 
-HTR is a Strix Halo–oriented member of the rotated, Hessian-aware trellis-quantization family. It combines ideas learned by studying exlr8, ExLlamaV3/EXL3, QTIP, QuIP/QuIP#, and GPTQ/LDLQ. Its contribution is the particular codec, packing, tensor policy, and AMD execution integration described here—not the invention of rotation, trellis coding, Viterbi search, or second-order quantization. Read [LINEAGE.md](LINEAGE.md) alongside this document.
+HTR co-designs low-bit weight storage, calibration-aware encoding, and GPU execution for AMD Strix Halo. Its practical focus is fidelity per bit and useful inference performance: condition the weights, encode them as compact trellis streams, and reconstruct values efficiently where the GPU consumes them.
+
+This document explains the design from activation statistics to kernel behavior. See [findings and evidence](EVIDENCE.md) for measured outcomes and [acknowledgments](LINEAGE.md) for the research and engineering lineage.
 
 ## 1. What problem are we solving?
 
 At low batch size, an integrated GPU often spends much of a decode step reading weights from shared memory. Reducing the stored bytes can reduce that traffic and let a larger checkpoint fit. But it helps only if decoding the compressed representation, rotating activations, and scheduling the work do not consume the savings.
 
-Our objective is therefore not simply the smallest file or the highest nominal bit depth. It is a useful combination of:
+The design balances:
 
 - fidelity to the source model, measured on held-out data;
 - actual packed bytes, including scales, signs, padding, and untouched tensors;
@@ -65,11 +67,9 @@ W1 uses the following fixed integer generator:
 
 The encoder normalizes each rotated output row and stores its scale as FP16. The decoder reconstructs the selected codebook value and applies the row scale.
 
-This generator was selected to fit RDNA-oriented integer multiply/add and byte-sum operations. It avoids a large per-weight codebook load in the fused decoder. Unlike exlr8's FP8-E4M3-rounded path, W1 does not require FP8 tensor-core execution. Unlike an INT4 scalar code, a K4 trellis stream does not decode to only 16 independent integer values.
+This generator fits RDNA-oriented integer multiply/add and byte-sum operations. The fused decoder computes the codebook value from the state, avoiding a large per-weight codebook load and requiring no FP8 tensor-core execution. A K4 trellis stream stores four new bits per weight while reconstructing values from the larger state-dependent codebook.
 
 The generator is an integer-lattice construction before normalization, but this does not make the serving operation “native INT4” or “native FP4.” Small-row HTR kernels reconstruct values and use floating-point dot-pair arithmetic and accumulation. The compressed representation, reconstruction precision, activation precision, and arithmetic instruction are distinct.
-
-Current EXL3 also has a byte-sum codebook and RDNA-specific kernels. Our historical comparison to an older MCG decoder is not a benchmark of current EXL3. No current-EXL3 superiority claim is made.
 
 ## 6. Exact W1 storage and bits per weight
 
@@ -93,16 +93,18 @@ K2–K5 is the practical HTR family selected by this work. The low-level W1 rout
 
 See [FORMAT.md](FORMAT.md) for the serialization contract.
 
-## 7. Tensor policy matters as much as the codec
+## 7. Tensor policy: precision where it matters
 
-The release candidates use different policies for different roles:
+A useful model policy distinguishes tensor roles instead of assigning one width indiscriminately:
 
-- MiMo-9B: selected dense linears at K3 or K4, with the output head at K4; excluded tensors remain at source precision.
-- Qwen3.8-Flash-Next: selected dense trunk at K5, output head at K4, routed experts at K4, and hyperconnections on a separate GPTQ8-HC wire. It is a composite model, not “everything at four bits.”
+- **Dense projections:** select the low-bit width using their contribution to model fidelity and storage.
+- **Output head:** calibrate separately; its effect on the final distribution can justify a different width from the trunk.
+- **Routed experts:** account for both stored bytes and the expert weights read by actual routing.
+- **Sensitive, auxiliary, or unsupported tensors:** retain source precision or use an explicitly supported alternative representation.
 
-These are measured model-specific decisions, not universal width prescriptions. In particular, a small local reconstruction error can conceal downstream sensitivity in hyperconnections or the output head. Keep model KL/PPL and representative task behavior in the loop.
+HTR's checkpoint tools express target widths, shared-input groups, and retained-precision exceptions. Model-level KL/PPL and representative task behavior guide the policy; small local reconstruction error alone can miss a sensitive component. The [case study](case-studies/dense-9b.md) demonstrates separate trunk/head choices; [architecture adapters](ADAPTERS.md) cover specialized encoder paths.
 
-For routed experts, static size and active bytes are different. Giving the hottest experts more bits can shrink the file relative to one baseline while increasing bytes read per token relative to another. Mixed-width allocation therefore needs both a storage budget and a routing-weighted traffic ledger. The current Qwen release candidate uses uniform K4 routed experts; a general multi-width optimizer is not claimed as a completed feature of this source release.
+For routed experts, static size and active bytes are different. Giving the hottest experts more bits can shrink the file relative to one baseline while increasing bytes read per token relative to another. Mixed-width allocation therefore needs both a storage budget and a routing-weighted traffic ledger. The specialized expert encoder emits packed intermediate packets; routing-aware allocation and final serving-layout integration are distinct tasks.
 
 ## 8. Execution on Strix Halo
 
@@ -112,24 +114,22 @@ The source includes HIP-oriented packed GEMV kernels, block-Hadamard activation 
 
 ### Prefill / many rows
 
-More rows change the best strategy. The included dense runtime generally reconstructs a matrix into its original BF16 basis and calls GEMM for larger-row prefill; short multirow calls can use GEMV chunks. The separately developed routed-MoE runtime uses dedicated packed expert layouts and prefill kernels. It is not included merely because the encoder can emit expert packets.
+More rows change the best strategy. The included dense runtime generally reconstructs a matrix into its original BF16 basis and calls GEMM for larger-row prefill; short multirow calls can use GEMV chunks. Routed-MoE integration additionally needs an expert layout, routing, and consuming kernels that match the emitted packets.
 
-Both paths dequantize. “No whole-weight expansion on the decode hot path” is accurate; “no dequantization” is not. A decoder that saves bytes during generation can still regress prefill. The measured MiMo table shows that tradeoff rather than hiding it.
+Both paths reconstruct weights, but they do so at different granularities. Small-row decode keeps weights packed until consumption; larger-row prefill can amortize a reconstructed matrix over GEMM. The [serving case study](case-studies/dense-9b.md#radeon-8060s-serving-e10) measures the generation gain and prefill tradeoff separately.
 
 ### Runtime integration is part of the result
 
-HTR-W1 is not GGUF, AWQ, GPTQ, or EXL3-compatible storage. Stock runtimes do not gain support by changing a model label. The supplied vLLM quantization plugin and native sources are an experimental integration snapshot; Qwen3.8's final MoE/HC/PLE/speculation runtime must be pinned and qualified separately.
+HTR-W1 has an explicit wire contract. A serving runtime needs a matching loader, layouts, kernels, and model adapters. The supplied vLLM quantization plugin and native sources provide an experimental packed-linear integration; complete deployments bind these to the selected model and runtime build. [Component status](RELEASE_STATUS.md) separates the verified CPU reference from native model-serving qualification.
 
-A package import, successful CPU round trip, or compiled HIP extension is not a complete model-serving test. This release preparation performs CPU packaging checks and retains historical model evidence without interrupting ongoing native qualification.
-
-## 9. What the evidence does—and does not—show
+## 9. From codec to useful inference
 
 [Evidence tables](EVIDENCE.md) distinguish three separate questions:
 
 1. Codec screen: same target tensors and BF16 teacher, comparing HTR with local scalar/GGML controls. This measures a real fidelity-per-bit signal.
-2. Packed artifact check: the actual MiMo K3/K4 + K4-head artifacts versus their BF16 teacher and fake-quantized reconstruction.
+2. Packed artifact check: stored K3/K4 trunk + K4-head checkpoints versus their BF16 teacher and fake-quantized reconstruction.
 3. Serving: historical single-sequence, fixed-output-length wall-generation rates and separate prompt-processing rates on the Radeon 8060S.
 
-Do not combine a codec screen's lower KL with a different artifact's speed to advertise a single matched product result. KL here is top-128-plus-rest coarsened teacher KL, a lower bound on full-vocabulary KL; it is not accuracy. PPL can move in a different direction, and neither metric establishes tool reliability, coding quality, multimodal fidelity, or every language/domain.
+Together, these establish a path from better measured fidelity per target bit, through a faithful packed artifact, to improved generation in the tested bandwidth-sensitive deployment. Each result keeps its own control, tensor policy, and timing boundary.
 
-The demonstrated benefit is lower measured teacher divergence at fewer target bits than specific tested controls, plus substantial historical generation improvement over BF16 on the MiMo deployment. It is not lossless compression, an all-workload speedup, a claim against every GPTQ implementation, or an established win over current EXL3/exlr8.
+The published KL is top-128-plus-rest coarsened teacher divergence, a lower bound on full-vocabulary KL. PPL and task-level quality answer different questions, and prefill has a different execution profile from generation. Those distinctions guide where to use HTR and what to measure when extending it to another model or workload.

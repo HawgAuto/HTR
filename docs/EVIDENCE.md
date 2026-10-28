@@ -1,61 +1,79 @@
-# Evidence: fidelity, size, and serving are separate claims
+# HTR findings and evidence
 
-These are saved real-model experiments, not new measurements of the packaged source preview. Numeric values are preserved in the adjacent JSON files; private paths and generation samples have been omitted. This source release does not claim a matched comparison with current EXL3/exlr8.
+HTR's results connect three questions: **how much fidelity fits in a bit budget, whether the packed artifact preserves that fidelity, and whether fewer weight bytes improve execution.** This page presents the findings; the [dense 9B case study](case-studies/dense-9b.md) contains the complete model-specific tables and conditions.
 
-## E08: MiMo-9B codec screen
+The current public model dataset is from MiMo-V2.6-Distill-Qwen-9B. Codec and packed-quality evaluations use 64×2048 held-out WikiText windows, with 131,008 scored tokens. Serving measurements use Radeon 8060S. The observations below retain their own measurement scopes rather than combining different tests into a single product score.
 
-Same BF16 source/target tensor set, 128×2048 calibration windows and 64×2048 held-out WikiText windows (131,008 scored tokens). Head and embeddings were excluded from the low-bit target subset. Values are fake-quantized weights evaluated through the HF model; they are not the K4-head release-artifact rows. Lower KL means closer teacher distribution, not higher task accuracy. KL is top-128-plus-rest coarsened KL.
+## 1. More fidelity per target bit
 
-| Original quant label | Target bpw | PPL | Teacher KL | Top-1 agreement |
-|---|---:|---:|---:|---:|
-| bf16 | 16.000000 | 9.02360 | reference | reference |
-| gptq:4 | 4.250000 | 9.12474 | 0.065814 | 0.89984 |
-| htr:3 | 3.003299 | 9.32047 | 0.082963 | 0.88609 |
-| gptq:3 | 3.250000 | 9.67354 | 0.237551 | 0.79979 |
-| ldlq_scalar_rht:3 | 3.003299 | 9.41058 | 0.138338 | 0.84702 |
-| htr:4 | 4.003299 | 9.06851 | 0.028893 | 0.93634 |
-| htr:2 | 2.003299 | 10.54739 | 0.276500 | 0.77959 |
-| Q4_K | 4.500000 | 8.99879 | 0.041131 | 0.92177 |
-| IQ4_XS | 4.250000 | 8.88564 | 0.056440 | 0.90846 |
-| Q3_K | 3.437500 | 10.23806 | 0.212514 | 0.80948 |
-| IQ3_XXS | 3.062500 | 9.29002 | 0.185692 | 0.82051 |
-| Q2_K | 2.625000 | 9.96638 | 0.373139 | 0.74590 |
-| IQ2_XS | 2.312500 | 10.89549 | 0.450601 | 0.71592 |
+The codec screen compares the same target tensors against the same BF16 teacher. Embeddings and the output head are outside this target subset. HTR combines the rotated representation and block-LDLQ feedback with a trellis search over valid code sequences.
 
-HTR4 in this screen had 56.10% lower teacher KL and 5.80% fewer bits on the target tensors than the local GPTQ4-g128 control. This is not a universal claim about every GPTQ implementation. Several scalar/GGML controls have lower PPL despite higher teacher KL; both columns are shown. HTR3 is not claimed to match HTR4's fidelity.
+| Comparison | HTR target bpw | Control target bpw | HTR teacher KL | Control teacher KL | Lower KL | Fewer target bits |
+|---|---:|---:|---:|---:|---:|---:|
+| `htr:4` / `gptq:4` | 4.003299 | 4.250000 | 0.028893 | 0.065814 | 56.10% | 5.80% |
+| `htr:3` / `gptq:3` | 3.003299 | 3.250000 | 0.082963 | 0.237551 | 65.08% | 7.59% |
+| `htr:3` / `ldlq_scalar_rht:3` | 3.003299 | 3.003299 | 0.082963 | 0.138338 | 40.03% | 0.00% |
 
-## E10: actual packed release candidates
+The same-budget comparison shows HTR improving teacher fidelity against a scalar control that already uses rotation and LDLQ feedback. It is a direct result for the tested trellis-based encoding pipeline at matched target bitrate.
 
-HF evaluation, 64×2048 WikiText windows, same-process BF16 teacher, 131,008 scored tokens. This includes the K4 head and is separate from the codec screen.
+**Metric:** teacher KL here is top-128-plus-rest coarsened divergence, a lower bound on full-vocabulary KL. Lower means closer to the teacher distribution. PPL and task accuracy are different measures; the [full control table](case-studies/dense-9b.md#codec-screen-e08) retains PPL and top-1 agreement, including controls with better PPL.
 
-| Original label | PPL | Teacher KL | Top-1 agreement |
+Source: [`codec-screen.json`](../evidence/codec-screen.json). Percentage reductions are calculated from the full-precision rows, not the rounded display values.
+
+## 2. Low overhead beyond the nominal bit width
+
+W1 stores a K-bit stream plus one FP16 scale per output row and packed input/output signs. For an `m × n` matrix:
+
+```text
+payload bytes = m*n*K/8 + 2*m + n/8 + m/8
+effective bpw = K + 16/n + 1/m + 1/n
+```
+
+For a **4096×4096 matrix**, including those scales and signs:
+
+| Width | W1 payload bytes | Effective bpw | BF16 bytes / W1 bytes |
 |---|---:|---:|---:|
-| bf16 | 9.019484 | reference | reference |
-| bf16-repeat | 9.019484 | 0.000000 | 1.000000 |
-| htr4-lmh4-packed | 9.047606 | 0.030529 | 0.929737 |
-| htr4-lmh4-fake | 9.048045 | 0.030586 | 0.929218 |
-| bf16 | 9.019484 | reference | reference |
-| bf16-repeat | 9.019484 | 0.000000 | 1.000000 |
-| htr3-lmh4-packed | 9.223103 | 0.083370 | 0.882854 |
-| htr3-lmh4-fake | 9.226923 | 0.083447 | 0.882725 |
+| K2 | 4,203,520 | 2.004395 | 7.98× |
+| K3 | 6,300,672 | 3.004395 | 5.33× |
+| K4 | 8,397,824 | 4.004395 | 4.00× |
+| K5 | 10,494,976 | 5.004395 | 3.20× |
 
-The fake and packed rows are close, not bit-identical full-model outputs. The BF16 repeat is exact in this evaluation.
+This is exact format accounting with rounded ratios, not a whole-model measurement. Checkpoint headers, retained-precision tensors, runtime layouts, KV cache, and workspaces are separate. The practical result is that large supported matrices stay close to their nominal bitrate. See the [wire specification](FORMAT.md) and [tensor-policy methodology](METHODOLOGY.md#7-tensor-policy-precision-where-it-matters).
 
-## E10: historical Radeon 8060S serving
+## 3. Packed checkpoints track the encoder's reconstruction
 
-Graphs on, no speculation, single sequence, prefix cache off; model sampling temperature 0.6/top-p 0.95/top-k 20. Generation: 16-token prompt and 256 forced output tokens. Prompt test: 2048 input plus one output token. Three repetitions; medians below and all samples in `historical-serving.json`. Both rates include the full in-process `generate` call, not an HTTP server-only device timer. Final-table HTR kernels were the then-promoted v4/v5 path. These numbers must be rerun before attributing them to a successor packaged runtime.
+The packed-artifact evaluation includes a separately encoded K4 output head. The K4 trunk + K4 head achieved **PPL 9.047606**, against **9.019484** for its same-process BF16 teacher; the fake-quantized reconstruction measured **9.048045**. Packed teacher KL was **0.030529**, compared with **0.030586** for the fake-quantized reconstruction.
 
-| Original label | Wall generation tok/s | Prompt wall tok/s | Serving PPL (16×2048) |
+This closes an important gap between a quantizer experiment and a stored artifact: the packed representation retains the measured model fidelity closely. The K3 candidate and the exact BF16 repeat controls are also included in the [complete packed table](case-studies/dense-9b.md#packed-checkpoint-fidelity-e10).
+
+Source: [`packed-quality.json`](../evidence/packed-quality.json). These whole-model evaluation results are close, not bit-identical; the CPU serialization test separately checks exact reconstruction of its encoded matrix.
+
+## 4. Fewer weight bytes can improve generation substantially
+
+The historical Radeon 8060S test measured one sequence, no speculation, prefix cache off, and three repetitions per configuration. Generation used 16 input tokens and 256 forced output tokens. The separate prompt test used 2048 input tokens and one output token.
+
+| Original label | Median wall-generation tok/s | Relative to BF16 | Median prompt-wall tok/s |
 |---|---:|---:|---:|
-| mimo9b-bf16-final | 13.545 | 1640.73 | 9.152306 |
-| mimo9b-htr4-final | 33.893 | 1450.30 | 9.206132 |
-| mimo9b-htr3-final | 38.869 | 1469.19 | 9.364289 |
-| mimo9b-htr4-lmh4-final | 42.486 | 1467.09 | 9.209396 |
-| mimo9b-htr3-lmh4-final | 50.791 | 1320.11 | 9.367120 |
-| mimo9b-htr3-lmh3-final | 51.834 | 1422.48 | 9.399853 |
+| `mimo9b-bf16-final` | 13.545 | 1.00× | 1640.73 |
+| `mimo9b-htr4-lmh4-final` | 42.486 | 3.14× | 1467.09 |
+| `mimo9b-htr3-lmh4-final` | 50.791 | 3.75× | 1320.11 |
 
-Lower-bit variants improved generation while reducing prompt throughput versus BF16. Do not advertise one headline as an all-phase speedup. The additional K3-head row is a diagnostic, not a selected release variant. These are not tool-use, coding, safety, multilingual or multimodal quality benchmarks. No confidence intervals or broad portability claim are established by three repetitions.
+The generation benefit is a measured execution result, not an inference from file size. It also shows why HTR treats decode and prefill separately: the prompt-wall rates fell by **10.58%** and **19.54%** for these two configurations, respectively.
 
-## Current Qwen3.8 release
+Both metrics include the complete in-process `generate` call: generation includes its short prompt, and prompt-wall includes its one-token completion. They are not pure device timers or HTTP throughput. The [case study](case-studies/dense-9b.md#radeon-8060s-serving-e10) retains every configuration and links every repetition; [`historical-serving.json`](../evidence/historical-serving.json) records the runtime and sampling settings.
 
-The active qualification session owns the final runtime and accepted scoreboard. This repository does not substitute old Qwen component screens or design targets for the final composite-model release numbers. Final Qwen claims, hashes, runtime image/source pins and runnable instructions remain gated on that handoff.
+## 5. An executable, inspectable reference
+
+The source-preview CPU suite covers independent K2–K5 bitstream decoding, sign packing, Hadamard inversion, a self-contained circular-state Viterbi path, native-source inclusion, path portability, and a real encode → safetensors → reopen → decode round trip.
+
+Run it with:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+The seven tests validate the reference/packaging boundary. Historical full-model measurements remain associated with their recorded runtime; native qualification of the distributable integration is tracked in [release status](RELEASE_STATUS.md).
+
+## Using these findings
+
+The strongest demonstrated fit is **compact weights plus improved generation in a bandwidth-sensitive local workload**, with better teacher fidelity per bit than the specific tested codec controls. Choose widths and retained-precision tensors using model-level evaluation, and measure prefill and generation separately on the intended runtime. Wider model coverage and task-specific evaluations extend this evidence; they are not assumed from it.
