@@ -8,6 +8,8 @@ HTR combines Hessian-aware encoding, rotated trellis quantization, and hardware-
 
 The goal is practical: **more model in memory, less weight traffic per generated token, and precision where it matters.**
 
+HTR was inspired by exlr8 and builds on work by the ExLlamaV3/EXL3, QTIP, QuIP/QuIP#, and GPTQ/LDLQ authors. We gratefully acknowledge that foundation; our [lineage and technical differences](docs/LINEAGE.md) explain how HTR specializes the codebook, checkpoint format, and execution path for Strix Halo.
+
 [Findings & evidence](docs/EVIDENCE.md) · [How it works](docs/METHODOLOGY.md) · [Get started](docs/USAGE.md) · [Format specification](docs/FORMAT.md)
 
 ## What HTR brings
@@ -75,6 +77,6 @@ The tests run on CPU and include a real matrix encode → safetensors → reopen
 
 ## Acknowledgments and license
 
-HTR builds on work by the exlr8, ExLlamaV3/EXL3, QTIP, QuIP/QuIP#, and GPTQ/LDLQ authors, alongside the AMD and open-source inference communities. Our [acknowledgments](docs/LINEAGE.md) document that lineage and the HTR-specific engineering in detail.
+See [Lineage and acknowledgments](docs/LINEAGE.md) for upstream credits and source-reuse disclosures, and [HTR versus EXL3](docs/LINEAGE.md#htr-and-exl3-what-actually-differs) for the codebook, format, and RDNA execution differences.
 
 HTR code is [MIT licensed](LICENSE). [Third-party notices](THIRD_PARTY_NOTICES.md) and source-model licenses retain their own scope. [Artwork, chart sources, and typography](media/README.md).
