@@ -44,6 +44,21 @@ def resolve_policy(policy, cname, default_k):
     return default_k
 
 
+def quant_config(report, seam):
+    """quantization_config for a packed checkpoint. The default seam writes exactly the earlier config; an opt-in seam
+    is recorded as provenance under "encoder" (the wire and every decoder are unchanged, so loaders ignore it)."""
+    qc = {"quant_method": "htr", "wire": "HTR-W1", "generator": "rdna24", "L": 16, "tile": 16,
+          "rht_block": 128, "modules": {k: {"K": v["K"]} for k, v in report.items()}}
+    if seam != "htr":
+        qc["encoder"] = {"seam": seam}
+    return qc
+
+
+def cache_matches(cached, names, K, seam):
+    """A --cache group file is reusable only for the same names, K and seam (files without a seam predate it: 'htr')."""
+    return cached["names"] == names and cached["K"] == K and cached.get("seam", "htr") == seam
+
+
 class LayerDirHessians:
     """E08-format Hessian cache: <dir>/layerNNN.pt = {module name: H}. Loads one layer file at a time (MiMo-9B: 25 GB total)."""
     def __init__(self, d, dev):
@@ -116,6 +131,9 @@ def main():
     ap.add_argument("--hessians", default=None, help="cache file (load if exists, else save)")
     ap.add_argument("--save-fake", default=None, help="also write a BF16 fake-quant checkpoint (dequantized HTR) here")
     ap.add_argument("--viterbi", default="auto", choices=["auto", "v1", "ref"])
+    ap.add_argument("--seam", default="htr", choices=list(encode.SEAMS),
+                    help="tail-biting seam rule: 'htr' (default, byte-identical to earlier releases) or opt-in 'qtip'; "
+                         "changes codes only (wire and decoders unchanged); 'v1' supports 'htr' only")
     ap.add_argument("--cache", default=None, help="shared per-group result dir (multi-GPU workers: atomic claim + save; final run assembles)")
     ap.add_argument("--order", default="up", choices=["up", "down"], help="group order for this worker")
     ap.add_argument("--worker-only", action="store_true", help="encode unclaimed groups into --cache and exit (no checkpoint write)")
@@ -180,7 +198,7 @@ def main():
         gidx = gidx[::-1]
     if args.cache:
         os.makedirs(args.cache, exist_ok=True)
-        json.dump(dict(groups=[names for _, names in glist], bits=args.bits, seed=args.seed),
+        json.dump(dict(groups=[names for _, names in glist], bits=args.bits, seed=args.seed, seam=args.seam),
                   open(os.path.join(args.cache, f"plan.{os.getpid()}.json"), "w"))
     host = os.uname().nodename + ":" + (torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu")
     for gi in gidx:
@@ -192,7 +210,7 @@ def main():
         cached = None
         if cpath and os.path.exists(cpath):
             cached = torch.load(cpath, map_location="cpu", weights_only=False)
-            assert cached["names"] == names and cached["K"] == K, (gi, cached["names"], names)
+            assert cache_matches(cached, names, K, args.seam), (gi, cached["names"], names, cached.get("seam", "htr"), args.seam)
         elif cpath:
             try:
                 fd = os.open(cpath + ".claim", os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -203,11 +221,12 @@ def main():
                 while not os.path.exists(cpath):          # assembler: wait for the claiming worker
                     time.sleep(30)
                 cached = torch.load(cpath, map_location="cpu", weights_only=False)
+                assert cache_matches(cached, names, K, args.seam), (gi, cached["names"], names, cached.get("seam", "htr"), args.seam)
         if cached is not None:
             res, rels = cached["res"], cached["rel"]
         else:
             jobs = [dict(W=mods[nm].weight.data.to(dev).float(), H=H[nm]) for nm in names]
-            res = encode.encode_group(jobs, K, seed=args.seed + 104729 * gi, shared_su=True)
+            res = encode.encode_group(jobs, K, seed=args.seed + 104729 * gi, shared_su=True, seam=args.seam)
             rels = []
             for jb, r in zip(jobs, res):
                 E_ = (jb["W"].double() - r["What"].double())
@@ -216,7 +235,7 @@ def main():
             del jobs
             if cpath:
                 keep = [{k: r[k].contiguous().cpu() for k in ("qweight", "scales", "su", "sv")} | {"What": r["What"].bfloat16().cpu()} for r in res]
-                torch.save(dict(names=names, K=K, res=keep, rel=rels, host=host, seconds=time.time() - t), cpath + ".tmp")
+                torch.save(dict(names=names, K=K, seam=args.seam, res=keep, rel=rels, host=host, seconds=time.time() - t), cpath + ".tmp")
                 os.replace(cpath + ".tmp", cpath)
                 if args.worker_only:
                     log(f"group {gi+1}/{len(glist)} K{K} {names} {time.time()-t:.0f}s -> cache")
@@ -279,8 +298,7 @@ def _write(src, out, files, replaced, new_t, report, escapes, meta, args, quanti
     json.dump({"metadata": {"total_size": total}, "weight_map": wmap}, open(os.path.join(out, "model.safetensors.index.json"), "w"), indent=1)
     cfg = json.load(open(os.path.join(src, "config.json")))
     if quantized:
-        cfg["quantization_config"] = {"quant_method": "htr", "wire": "HTR-W1", "generator": "rdna24", "L": 16, "tile": 16,
-                                      "rht_block": 128, "modules": {k: {"K": v["K"]} for k, v in report.items()}}
+        cfg["quantization_config"] = quant_config(report, args.seam)
     json.dump(cfg, open(os.path.join(out, "config.json"), "w"), indent=2)
     nq = sum(v["shape"][0] * v["shape"][1] for v in report.values())
     bits = sum(v["shape"][0] * v["shape"][1] * v["K"] + 16 * v["shape"][0] + (v["shape"][0] + v["shape"][1]) for v in report.values())
