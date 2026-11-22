@@ -13,7 +13,7 @@ gate_up_proj = [gate, up]. Same encoder/seed convention as htr.quantize (encode_
              same file names. The Quark quantization_config is kept (experts stay int4/int8); the HTR module set goes to
              config["htr_overlay"] and htr_report.json.
 """
-import argparse, json, os, re, time
+import argparse, glob, json, os, re, tempfile, time
 import torch
 from safetensors import safe_open
 from safetensors.torch import save_file
@@ -27,6 +27,73 @@ HMAP = {"linear_attn.in_proj_qkv": "linear_attn.in_proj_qkvz", "linear_attn.in_p
         "self_attn.v_proj": "self_attn.qkv_proj", "mlp.shared_expert.gate_proj": "mlp.shared_expert.gate_up_proj",
         "mlp.shared_expert.up_proj": "mlp.shared_expert.gate_up_proj"}
 ORDER = ["in_proj_qkv", "in_proj_z", "q_proj", "k_proj", "v_proj", "gate_proj", "up_proj"]   # member order inside a merged group
+
+
+REFIT_RECIPE = dict(scale_refit=True, refit_row_batch=128, damp=0.01)
+
+
+def write_plan_if_absent(path, value):
+    """Publish complete bytes without replacing another worker's plan."""
+    fd, tmp = tempfile.mkstemp(prefix=".plan-", dir=os.path.dirname(path) or ".")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(value, f, indent=0)
+            f.flush()
+            os.fsync(f.fileno())
+        try:
+            os.link(tmp, path)
+        except FileExistsError:
+            pass
+    finally:
+        os.unlink(tmp)
+
+
+def check_plan(a, groups, *, publish=False):
+    """Legacy missing flag means unrefit; workers may not relabel existing cache files."""
+    enabled = getattr(a, "scale_refit", False)
+    if type(enabled) is not bool:
+        raise ValueError("scale-refit flag must be boolean")
+    pf = os.path.join(a.cache, "plan.json")
+    wanted = dict(groups=groups, bits=a.bits, seed=a.seed, hdir=a.hdir, hmix=a.hmix)
+    if enabled:
+        wanted.update(scale_refit=True, model=os.path.abspath(a.model), viterbi=a.viterbi)
+    if publish and not os.path.exists(pf):
+        if any(glob.glob(os.path.join(a.cache, "g*." + suffix)) for suffix in ("pt", "claim", "tmp")) and not os.path.exists(pf):
+            raise ValueError("cache has no plan provenance; use a separate cache")
+        os.makedirs(a.cache, exist_ok=True)
+        write_plan_if_absent(pf, wanted)
+    if not os.path.exists(pf):
+        if enabled:
+            raise ValueError("scale-refit cache requires plan provenance")
+        return {}  # legacy manually assembled caches retain their original path
+    with open(pf) as f:
+        previous = json.load(f)
+    if not isinstance(previous, dict) or type(previous.get("scale_refit", False)) is not bool or previous.get("scale_refit", False) != enabled:
+        raise ValueError("scale-refit plan mismatch; use a separate cache")
+    # Assembly may deliberately mix per-group K and need not repeat calibration flags.
+    keys = tuple(wanted) if publish else ("groups", "seed") + (() if a.mixed else ("bits",)) + (("model",) if enabled else ())
+    if json.dumps({k: previous.get(k) for k in keys}, sort_keys=True) != json.dumps({k: wanted[k] for k in keys}, sort_keys=True):
+        raise ValueError("cache plan identity mismatch")
+    return previous
+
+
+def check_group(c, g, a, gi):
+    """Validate provenance and complete member rosters before assembly writes anything."""
+    enabled = getattr(a, "scale_refit", False)
+    meta = c.get("encoder", {})
+    if not isinstance(meta, dict) or type(meta.get("scale_refit", False)) is not bool or meta.get("scale_refit", False) != enabled:
+        raise ValueError("scale-refit group recipe mismatch")
+    if enabled and meta != REFIT_RECIPE:
+        raise ValueError("scale-refit group parameters differ")
+    if type(c.get("K")) is not int or (enabled and c["K"] not in (2, 3, 4, 5)):
+        raise ValueError("scale-refit group width unsupported")
+    if c.get("names") != g["names"] or (c["K"] != a.bits and not a.mixed) or c.get("seed") != a.seed + 104729 * gi:
+        raise ValueError("group identity mismatch")
+    n = len(g["names"])
+    if len(c.get("res", [])) != n or len(c.get("rel", [])) != n:
+        raise ValueError("incomplete group member roster")
+    if enabled and (not isinstance(c.get("scale_refit"), list) or len(c["scale_refit"]) != n or not all(isinstance(x, dict) for x in c["scale_refit"])):
+        raise ValueError("missing scale-refit diagnostics")
 
 
 def log(*a):
@@ -66,8 +133,8 @@ def cmd_worker(a):
     encode.VITERBI = {"auto": vit_v2.viterbi_auto, "v1": vit_v1.viterbi, "ref": None}[a.viterbi]
     wm, groups = plan(a.model)
     src = Src(a.model, wm)
-    os.makedirs(a.cache, exist_ok=True)
-    json.dump(dict(groups=groups, bits=a.bits, seed=a.seed, hdir=a.hdir, hmix=a.hmix), open(os.path.join(a.cache, "plan.json"), "w"), indent=0)
+    check_plan(a, groups, publish=True)
+    refit_kw: dict = dict(REFIT_RECIPE) if getattr(a, "scale_refit", False) else {}
     host = os.uname().nodename + ":" + torch.cuda.get_device_name(0)
     order = range(len(groups)) if a.order == "up" else range(len(groups) - 1, -1, -1)
     if a.groups:   # bounded canary subset (same cache file names/seeds as the full run, so the canary groups are reused)
@@ -91,7 +158,7 @@ def cmd_worker(a):
             w = src.get(k)
             assert w.dtype == torch.bfloat16 and w.dim() == 2 and w.shape[1] == H.shape[0], (k, w.shape, H.shape)
             jobs.append(dict(W=w.to("cuda").float(), H=H))
-        res = encode.encode_group(jobs, a.bits, seed=a.seed + 104729 * gi, shared_su=True)
+        res = encode.encode_group(jobs, a.bits, seed=a.seed + 104729 * gi, shared_su=True, **refit_kw)
         rels = []
         Hd = H.double()
         for jb, r in zip(jobs, res):
@@ -99,7 +166,8 @@ def cmd_worker(a):
             rels.append(float(((E_ @ Hd) * E_).sum() / ((jb["W"].double() @ Hd) * jb["W"].double()).sum()))
         keep = [{k: r[k].contiguous().cpu() for k in ("qweight", "scales", "su", "sv")} | {"What": r["What"].bfloat16().cpu()} for r in res]
         torch.save(dict(names=g["names"], K=a.bits, seed=a.seed + 104729 * gi, res=keep, rel=rels, host=host,
-                        seconds=time.time() - t), cpath + ".tmp")
+                        seconds=time.time() - t,
+                        **(dict(encoder=dict(REFIT_RECIPE), scale_refit=[r["scale_refit"] for r in res]) if refit_kw else {})), cpath + ".tmp")
         os.replace(cpath + ".tmp", cpath)
         done += 1
         log(f"group {gi+1}/{len(groups)} L{g['layer']} {g['group']} K{a.bits} rel {['%.5f' % r for r in rels]} {time.time()-t:.0f}s "
@@ -131,6 +199,8 @@ def parse_groups(spec, n):
 
 
 def _assemble_one(a, wm, groups, packed, out):
+    cache_plan = check_plan(a, groups)
+    refit = getattr(a, "scale_refit", False)
     src = os.path.abspath(a.model)
     new, report = {}, {}
     gis = list(range(len(groups)))
@@ -141,7 +211,7 @@ def _assemble_one(a, wm, groups, packed, out):
     for gi in gis:
         g = groups[gi]
         c = torch.load(os.path.join(a.cache, f"g{gi:04d}.pt"), map_location="cpu", weights_only=False)
-        assert c["names"] == g["names"] and (c["K"] == a.bits or a.mixed), (gi, c["K"], c["names"], g["names"])
+        check_group(c, g, a, gi)
         su0 = c["res"][0]["su"]
         assert all(torch.equal(r["su"], su0) for r in c["res"]), f"group {gi} members disagree on su"
         for k, r, rel in zip(c["names"], c["res"], c["rel"]):
@@ -207,13 +277,17 @@ def _assemble_one(a, wm, groups, packed, out):
         cfg["quantization_config"]["htr_overlay"] = {"wire": "HTR-W1", "generator": "rdna24", "L": 16, "tile": 16, "rht_block": 128,
                                                      "vllm_prefix": "language_model.model.layers.",
                                                      "modules": {k: {"K": v["K"]} for k, v in report.items()}}
+        if refit:
+            cfg["quantization_config"]["htr_overlay"]["encoder"] = dict(REFIT_RECIPE)
     json.dump(cfg, open(os.path.join(tmp, "config.json"), "w"), indent=2)
     nq = sum(v["shape"][0] * v["shape"][1] for v in report.values())
     bits = sum(v["shape"][0] * v["shape"][1] * v["K"] + 16 * v["shape"][0] + (v["shape"][0] + v["shape"][1]) for v in report.values())
-    json.dump(dict(tool="htr.encode_q38", quantized=packed, partial=bool(a.partial), groups_encoded=gis, groups_total=len(groups), source=src, hdir=a.hdir, hmix=getattr(a, "hmix", None), bits=a.bits, seed=a.seed, modules=report,
+    json.dump(dict(tool="htr.encode_q38", quantized=packed, partial=bool(a.partial), groups_encoded=gis, groups_total=len(groups), source=src,
+                   hdir=cache_plan["hdir"] if refit else a.hdir, hmix=cache_plan["hmix"] if refit else getattr(a, "hmix", None), bits=a.bits, seed=a.seed, modules=report,
                    target_params=nq, target_bpw=bits / nq, affected_shards=affected, total_bytes=total,
                    mean_rel_proxy=sum(v["rel_proxy"] for v in report.values()) / len(report),
-                   encode_seconds=sum(v["seconds"] for v in report.values())),
+                   encode_seconds=sum(v["seconds"] for v in report.values()),
+                   **(dict(encoder=dict(REFIT_RECIPE)) if refit else {})),
               open(os.path.join(tmp, "htr_report.json"), "w"), indent=1)
     os.rename(tmp, out)
     log(f"{'packed' if packed else 'fake'} -> {out} total {total/1e9:.3f} GB target {nq/1e6:.1f}M params {bits/nq:.4f} bpw")
@@ -235,6 +309,8 @@ def main():
     ap.add_argument("--hmix", default=None, help="worker: weighted Hessian mixture 'dirA=wA,dirB=wB' (overrides --hdir)")
     ap.add_argument("--bits", type=int, default=4)
     ap.add_argument("--seed", type=int, default=1234)
+    ap.add_argument("--scale-refit", action="store_true",
+                    help="opt-in fixed-path scale refit (K2..K5); use a separate worker cache and repeat for assembly")
     ap.add_argument("--cache", required=True)
     ap.add_argument("--order", default="up", choices=["up", "down"])
     ap.add_argument("--viterbi", default="auto", choices=["auto", "v1", "ref"])
@@ -244,6 +320,8 @@ def main():
     ap.add_argument("--partial", action="store_true", help="assemble: only cached groups become HTR (canary)")
     ap.add_argument("--mixed", action="store_true", help="assemble: per-group K taken from each cache file (e.g. K5 early layers + K4 rest)")
     a = ap.parse_args()
+    if a.scale_refit and a.bits not in (2, 3, 4, 5) and (a.cmd == "worker" or not a.mixed):
+        ap.error("--scale-refit supports K2..K5 only")
     {"worker": cmd_worker, "assemble": cmd_assemble}[a.cmd](a)
 
 
