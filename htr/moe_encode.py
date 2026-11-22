@@ -15,7 +15,8 @@ artifacts/p1/widths-K345-20261020/ENCODER.sha256). Changes, all outside the nume
              calibration windows are copied into one preallocated tensor (P1: window list + torch.cat, a transient
              second copy of ~3.4 GB per layer). Same values and row order; P1 K5 ran its 56 GiB memcg at the limit.
 """
-import argparse, glob, hashlib, json, os, shutil, sys, time
+import argparse, glob, hashlib, json, os, shutil, sys, tempfile, time
+from typing import Any
 import torch
 import torch.nn.functional as F
 from safetensors import safe_open
@@ -121,6 +122,24 @@ class SourceExperts:
         return tuple(self.fh[n].get_slice(self.names[n])[e0:e1] for n in ("gate_up_proj", "down_proj"))
 
 
+def write_plan_if_absent(path, plan):
+    """Publish one complete plan without replacing another worker's recipe."""
+    if os.path.exists(path):
+        return
+    fd, tmp = tempfile.mkstemp(prefix=".PLAN-", dir=os.path.dirname(path) or ".")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(plan, f)
+            f.flush()
+            os.fsync(f.fileno())
+        try:
+            os.link(tmp, path)
+        except FileExistsError:
+            pass
+    finally:
+        os.unlink(tmp)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dump", required=True); ap.add_argument("--out", required=True)
@@ -129,11 +148,25 @@ def main():
     ap.add_argument("--bits", type=int, required=True); ap.add_argument("--layers", default=",".join(map(str, range(48))))
     ap.add_argument("--chunk", type=int, default=16); ap.add_argument("--seed", type=int, default=1234)
     ap.add_argument("--damp", type=float, default=0.01)
+    ap.add_argument("--scale-refit", action="store_true",
+                    help="opt-in fixed-path FP16 row-scale refit (K2..K5); use a separate output tree")
     ap.add_argument("--rev", action="store_true", help="walk layers in reverse (second worker)")
     ap.add_argument("--x-cpu", action="store_true", help="keep the layer dump X on CPU, gather per expert")
     ap.add_argument("--max-chunks", type=int, default=0, help="stop cleanly after this many new chunks; 0 means all")
     ap.add_argument("--margin-gb", type=float, default=20.0, help="free space kept on the output filesystem")
     a = ap.parse_args()
+    if a.scale_refit and a.bits not in (2, 3, 4, 5):
+        ap.error("--scale-refit supports K2..K5 only")
+    # Missing provenance means the legacy, unrefit recipe. Reject mixing before device access.
+    pf = os.path.join(a.out, "PLAN.json")
+    if os.path.exists(pf):
+        with open(pf) as f:
+            previous_refit = json.load(f).get("scale_refit", False)
+        if type(previous_refit) is not bool or previous_refit != a.scale_refit:
+            raise ValueError("scale-refit PLAN mismatch; use a separate output tree")
+    elif a.scale_refit and glob.glob(os.path.join(a.out, "L*", "c*.pt")):
+        raise ValueError("scale-refit cannot reuse chunks without PLAN provenance")
+    refit_kw: dict[str, Any] = dict(scale_refit=True, refit_row_batch=128) if a.scale_refit else {}
     assert a.max_chunks >= 0 and 2 <= a.bits <= 8 and 512 % a.chunk == 0
     done_chunks = 0
     dev = "cuda"; os.makedirs(a.out, exist_ok=True)
@@ -141,9 +174,12 @@ def main():
     margin = int(a.margin_gb * 2**30); per_chunk = chunk_bytes_estimate(a.bits, a.chunk)
     pf = os.path.join(a.out, "PLAN.json")
     keys = ("bits", "chunk", "seed", "damp", "dump", "src")
-    if not os.path.exists(pf):
-        json.dump(dict({k: getattr(a, k) for k in keys}, layers=a.layers, format=FORMAT), open(pf, "w"))
-    plan = json.load(open(pf))
+    write_plan_if_absent(pf, dict({k: getattr(a, k) for k in keys}, layers=a.layers, format=FORMAT,
+                                 **({"scale_refit": True} if a.scale_refit else {})))
+    with open(pf) as f:
+        plan = json.load(f)
+    if type(plan.get("scale_refit", False)) is not bool or plan.get("scale_refit", False) != a.scale_refit:
+        raise ValueError("scale-refit PLAN mismatch after publication; use a separate output tree")
     assert plan.get("format") == FORMAT and all(plan[k] == getattr(a, k) for k in keys), "PLAN mismatch"
     Ls = [int(x) for x in a.layers.split(",")]
     todo = sum(not os.path.exists(os.path.join(a.out, f"L{L}", f"c{e0:03d}.pt")) for L in Ls for e0 in range(0, 512, a.chunk))
@@ -192,15 +228,15 @@ def main():
                 jobs_gu += [dict(W=G.float(), H=Hin), dict(W=U.float(), H=Hin)]
                 jobs_dn.append(dict(W=D.float(), H=Hdn))
                 meta.append(dict(e=e, n=n, Hin=Hin, Hdn=Hdn, G=G, U=U, D=D))
-            r_gu = encode.encode_group(jobs_gu, a.bits, seed=a.seed + 7919 * L + 104729 * e0, shared_su=True, damp=a.damp)
-            r_dn = encode.encode_group(jobs_dn, a.bits, seed=a.seed + 7919 * L + 104729 * e0 + 1, shared_su=True, damp=a.damp)
+            r_gu = encode.encode_group(jobs_gu, a.bits, seed=a.seed + 7919 * L + 104729 * e0, shared_su=True, damp=a.damp, **refit_kw)
+            r_dn = encode.encode_group(jobs_dn, a.bits, seed=a.seed + 7919 * L + 104729 * e0 + 1, shared_su=True, damp=a.damp, **refit_kw)
             keep, rows_out, verify_s = [], [], 0.0
             for i, m in enumerate(meta):
                 rg, ru, rd = r_gu[2 * i], r_gu[2 * i + 1], r_dn[i]
                 g4, u4, d4 = (w.to(dev) for w in R.expert(m["e"]))
                 su = (u4 * m["U"].float()).sum(1) / (m["U"].float() ** 2).sum(1)
                 sd = (d4 * m["D"].float()).sum(0) / (m["D"].float() ** 2).sum(0)
-                row = dict(L=L, e=m["e"], n=m["n"], rel_bits=R.bits[m["e"]], K=a.bits,
+                row: dict[str, Any] = dict(L=L, e=m["e"], n=m["n"], rel_bits=R.bits[m["e"]], K=a.bits,
                            htr=[rel(m["G"].float(), rg["What"], m["Hin"]), rel(m["U"].float(), ru["What"], m["Hin"]),
                                 rel(m["D"].float(), rd["What"], m["Hdn"])],
                            release=[rel(m["G"].float(), g4, m["Hin"]), rel(m["U"].float(), u4 / su[:, None], m["Hin"]),
@@ -208,6 +244,8 @@ def main():
                            energy=[float(((m["G"].float() @ m["Hin"]) * m["G"].float()).sum()),
                                    float(((m["U"].float() @ m["Hin"]) * m["U"].float()).sum()),
                                    float(((m["D"].float() @ m["Hdn"]) * m["D"].float()).sum())])
+                if a.scale_refit:
+                    row["scale_refit"] = {role: r["scale_refit"] for role, r in zip(ROLES, (rg, ru, rd))}
                 rows_out.append(row)
                 tv = time.time(); packed, sha = {}, {}
                 for role, r in zip(ROLES, (rg, ru, rd)):
@@ -217,6 +255,8 @@ def main():
             z = dict(format=FORMAT, L=L, K=a.bits, experts=keep, rows=rows_out, seconds=time.time() - tc,
                      verify_seconds=verify_s, decode_check="bitwise BF16 equality of wire.dequant vs What, every matrix",
                      decode_device=gpu, worker=me)
+            if a.scale_refit:
+                z["encoder"] = dict(scale_refit=True, refit_row_batch=128)
             assert strip_what(z), "reconstruction leaked into a P2 chunk"
             p = os.path.join(od, f"c{e0:03d}.pt")
             torch.save(z, p + ".tmp")
