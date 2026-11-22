@@ -43,8 +43,15 @@ def prep_H(H, W, damp=0.01):
 
 
 @torch.no_grad()
-def encode_group(jobs, K, seed=1234, shared_su=True, damp=0.01, max_batch=1024, log=None):
-    """jobs: list of dict(W=[m,n], H=[n,n]) sharing n. Returns list of dict(qweight, scales, su, sv, What)."""
+def encode_group(jobs, K, seed=1234, shared_su=True, damp=0.01, max_batch=1024, log=None,
+                 *, scale_refit=False, refit_row_batch=128):
+    """Encode jobs sharing n; optional fixed-path FP16 scale refit is default-off.
+
+    Returns qweight, scales, su, sv, What and Q. When scale_refit is enabled,
+    adds prepared calibration-objective statistics under scale_refit.
+    """
+    if not isinstance(scale_refit, bool):
+        raise TypeError('scale_refit must be a bool')
     vit = VITERBI or _viterbi_ref
     n = jobs[0]["W"].shape[1]
     assert n % 128 == 0
@@ -107,4 +114,12 @@ def encode_group(jobs, K, seed=1234, shared_su=True, damp=0.01, max_batch=1024, 
         What = (W * p["sv"][:, None] * p["su"][None, :]).contiguous()
         outs.append(dict(qweight=qw.cpu(), scales=p["rs"].half().cpu(), su=wire.pack_signs(p["su"]).cpu(),
                          sv=wire.pack_signs(p["sv"]).cpu(), What=What, Q=p["Q"]))
+    if scale_refit:
+        from .scale_refit import refit_packed
+        # Release recurrence workspaces before the independent post-fit pass.
+        P.clear()
+        p = None
+        for i, jb in enumerate(jobs):
+            outs[i] = refit_packed(jb['W'], jb['H'], outs[i], damp=damp,
+                                   row_batch=refit_row_batch)
     return outs
