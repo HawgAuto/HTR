@@ -170,8 +170,8 @@ def main():
     ap.add_argument("--hessians", default=None, help="cache file (load if exists, else save)")
     ap.add_argument("--save-fake", default=None, help="also write a BF16 fake-quant checkpoint (dequantized HTR) here")
     ap.add_argument("--viterbi", default="auto", choices=["auto", "v1", "ref"])
-    ap.add_argument("--seam", default="htr", choices=list(encode.SEAMS),
-                    help="tail-biting seam rule: 'htr' (default, byte-identical to earlier releases) or opt-in 'qtip'; "
+    ap.add_argument("--seam", default="qtip", choices=list(encode.SEAMS),
+                    help="tail-biting seam rule: 'qtip' (default) or 'htr' (earlier-release compatibility); "
                          "changes codes only (wire and decoders unchanged); 'v1' supports 'htr' only")
     ap.add_argument("--scale-refit", action="store_true",
                     help="opt-in post-encode refit of the FP16 row scales (htr.scale_refit, encoder damping): codes, "
@@ -183,6 +183,8 @@ def main():
     ap.add_argument("--worker-only", action="store_true", help="encode unclaimed groups into --cache and exit (no checkpoint write)")
     ap.add_argument("--offload", action="store_true", help="keep the model on CPU; move one group's weights/Hessians to the GPU at a time")
     args = ap.parse_args()
+    if args.viterbi == "v1" and args.seam != "htr":
+        ap.error("--viterbi v1 requires --seam htr; use auto or ref for the QTIP seam")
     dev = DEVICE
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from . import vit_v1, vit_v2
@@ -258,7 +260,9 @@ def main():
         cached = None
         if cpath and os.path.exists(cpath):
             cached = torch.load(cpath, map_location="cpu", weights_only=False)
-            assert cache_matches(cached, names, K, args.seam), (gi, cached["names"], names, cached.get("seam", "htr"), args.seam)
+            if not cache_matches(cached, names, K, args.seam):
+                raise ValueError(f"cache group {gi} has different names, K or seam; "
+                                 "use a matching cache (legacy caches require --seam htr)")
         elif cpath:
             try:
                 fd = os.open(cpath + ".claim", os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -269,7 +273,9 @@ def main():
                 while not os.path.exists(cpath):          # assembler: wait for the claiming worker
                     time.sleep(30)
                 cached = torch.load(cpath, map_location="cpu", weights_only=False)
-                assert cache_matches(cached, names, K, args.seam), (gi, cached["names"], names, cached.get("seam", "htr"), args.seam)
+                if not cache_matches(cached, names, K, args.seam):
+                    raise ValueError(f"cache group {gi} has different names, K or seam; "
+                                     "use a matching cache (legacy caches require --seam htr)")
         if cached is not None:
             res, rels = cached["res"], cached["rel"]
         else:
