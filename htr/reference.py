@@ -3,13 +3,24 @@ import torch
 L = 16
 S = 1 << L
 
+SEAMS = ("htr", "qtip")
+
+
 @torch.no_grad()
-def viterbi(x, w, cb, K, tailbite=True):
+def viterbi(x, w, cb, K, tailbite=True, seam="htr"):
     """Batched bitshift-trellis Viterbi.
     x, w: [B, T] targets and per-element weights; cb: [S] value of each 16-bit state.
     Minimises sum w*(x-cb[s_t])^2 with s_t = ((s_{t-1}<<K)&mask)|bits. Two-pass tail-biting
     makes the stream circular, so the rate is exactly K bits/weight. Returns states [B, T].
+    seam picks pass 2's pinned state j0 (both rules then run the same pinned pass 2):
+      'htr'  (default): j0 = low bits of the argmin end state of a free pass on the block;
+      'qtip' (opt-in) : j0 = high bits of the state at original index 0 of a free pass on the block rolled by T/2
+                        (QTIP/CPTC/EXL3 rule). Rounding-only: codes change, wire and decoders do not.
     """
+    if seam not in SEAMS:
+        raise ValueError(f"unknown seam {seam!r}")
+    if seam != "htr" and not tailbite:
+        raise ValueError("seam applies to tail-biting encodes only")
     B, T = x.shape
     nb = 1 << K
     Sj = S >> K
@@ -32,9 +43,23 @@ def viterbi(x, w, cb, K, tailbite=True):
             cost = (m[:, :, None] + w[:, t, None, None] * d).view(B, S)
         return cost, bps
 
-    cost, bps = run(None)
+    rows = torch.arange(B, device=dev)
+    if seam == "qtip":
+        h = T // 2
+        x0, w0 = x, w
+        x, w = torch.roll(x0, h, 1), torch.roll(w0, h, 1)
+        cost, bps = run(None)
+        s = cost.argmin(dim=1)
+        for t in range(T - 1, h, -1):           # back to rolled index h == original index 0
+            s = bps[t - 1][rows, s >> K].long() * Sj + (s >> K)
+        j0 = s >> K
+        x, w = x0, w0
+        del cost, bps
+    else:
+        cost, bps = run(None)
     if tailbite:
-        j0 = cost.argmin(dim=1) & (Sj - 1)
+        if seam == "htr":
+            j0 = cost.argmin(dim=1) & (Sj - 1)
         cost, bps = run(j0)
         ok = (ar[None, :] & (Sj - 1)) == j0[:, None]
         cost = torch.where(ok, cost, torch.full_like(cost, float("inf")))

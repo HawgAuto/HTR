@@ -120,7 +120,13 @@ def _get():
 TH = 256
 
 
-def viterbi(x, w, cb, K, tailbite=True, rmax=None, th=None):
+def viterbi(x, w, cb, K, tailbite=True, rmax=None, th=None, seam="htr"):
+    """seam: 'htr' (default, unchanged) or opt-in 'qtip' (pass 1 on the block rolled by T/2, j0 taken mid-path);
+    see htr/reference.py. Both rules run the same pinned pass 2; the wire and decoders are unchanged."""
+    if seam not in ("htr", "qtip"):
+        raise ValueError(f"unknown seam {seam!r}")
+    if seam != "htr" and not tailbite:
+        raise ValueError("seam applies to tail-biting encodes only")
     S = 1 << 16
     Sj = S >> K
     rmax = rmax or RMAX[K]
@@ -129,10 +135,22 @@ def viterbi(x, w, cb, K, tailbite=True, rmax=None, th=None):
     dev = x.device
     m = _get()
     dummy = torch.zeros(1, dtype=torch.int64, device=dev)
-    cost, bps = m.run(x, w, cb, dummy, K, False, rmax, th or TH)
+    rows = torch.arange(B, device=dev)
+    if seam == "qtip":
+        h = T // 2
+        cost, bps = m.run(torch.roll(x, h, 1).contiguous(), torch.roll(w, h, 1).contiguous(), cb, dummy, K, False,
+                          rmax, th or TH)
+        s = cost.argmin(dim=1)
+        for t in range(T - 1, h, -1):           # back to rolled index h == original index 0
+            low = s >> K
+            s = bps[t - 1][rows, low].long() * Sj + low
+        j0 = (s >> K).contiguous()
+    else:
+        cost, bps = m.run(x, w, cb, dummy, K, False, rmax, th or TH)
     ar = torch.arange(S, device=dev)
     if tailbite:
-        j0 = (cost.argmin(dim=1) & (Sj - 1)).contiguous()
+        if seam == "htr":
+            j0 = (cost.argmin(dim=1) & (Sj - 1)).contiguous()
         del cost, bps
         cost, bps = m.run(x, w, cb, j0, K, True, rmax, th or TH)
         ok = (ar[None, :] & (Sj - 1)) == j0[:, None]
@@ -149,14 +167,15 @@ def viterbi(x, w, cb, K, tailbite=True, rmax=None, th=None):
     return states
 
 
-def viterbi_auto(x, w, cb, K, tailbite=True):
+def viterbi_auto(x, w, cb, K, tailbite=True, seam="htr"):
     """Fastest measured config on the RTX 3090 (sweep_v2, 1024 tiles, idle GPU):
-    K2: grouped r=4/256 thr 0.256 s (v1 0.344); K3: v1 0.340 s (grouped r=3/512 0.358); K4: grouped r=2/256 0.568 s (v1 0.700)."""
+    K2: grouped r=4/256 thr 0.256 s (v1 0.344); K3: v1 0.340 s (grouped r=3/512 0.358); K4: grouped r=2/256 0.568 s (v1 0.700).
+    seam='qtip' (opt-in) always uses the grouped kernel; the default path is unchanged."""
     with torch.no_grad():
         if torch.version.hip:   # gfx1151 sweep (sweep_rocm.py, 1024 tiles): K2 r4/256 1.16 s, K3 r3/512 1.24 s, K4 r2/512 1.77 s; v1 2.35/2.81/4.33
             r, th = {2: (4, 256), 3: (3, 512), 4: (2, 512), 5: (2, 512), 6: (1, 512), 8: (1, 512)}[K]
-            return viterbi(x, w, cb, K, tailbite, rmax=r, th=th)
-        if K == 3:
+            return viterbi(x, w, cb, K, tailbite, rmax=r, th=th, seam=seam)
+        if K == 3 and seam == "htr":
             from . import vit_v1
             return vit_v1.viterbi(x, w, cb, K, tailbite)
-        return viterbi(x, w, cb, K, tailbite, rmax={2: 4, 4: 2, 5: 2, 6: 1, 8: 1}.get(K), th=256)
+        return viterbi(x, w, cb, K, tailbite, rmax={2: 4, 3: 3, 4: 2, 5: 2, 6: 1, 8: 1}.get(K), th=256, seam=seam)

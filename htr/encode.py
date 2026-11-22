@@ -7,9 +7,28 @@ from . import wire
 VITERBI = None          # callable(x[B,256], w[B,256], cb[S], K) -> states int64 [B,256]; set by caller
 
 
-def _viterbi_ref(x, w, cb, K):
+def _viterbi_ref(x, w, cb, K, seam="htr"):
     from .reference import viterbi
-    return viterbi(x, w, cb, K)
+    return viterbi(x, w, cb, K, seam=seam)
+
+
+SEAMS = ("htr", "qtip")
+
+
+def _seam_viterbi(vit, seam):
+    """Default 'htr' calls the callable exactly as before (4 arguments); opt-in seams need a seam-aware callable."""
+    import inspect
+    if seam not in SEAMS:
+        raise ValueError(f"unknown seam {seam!r}")
+    if seam == "htr":
+        return vit
+    try:
+        ok = "seam" in inspect.signature(vit).parameters
+    except (TypeError, ValueError):
+        ok = False
+    if not ok:
+        raise ValueError(f"Viterbi callable {vit!r} does not support seam={seam!r}")
+    return lambda x, w, cb, K: vit(x, w, cb, K, seam=seam)
 
 
 def blk_had_cols(W, bs=128):
@@ -44,15 +63,18 @@ def prep_H(H, W, damp=0.01):
 
 @torch.no_grad()
 def encode_group(jobs, K, seed=1234, shared_su=True, damp=0.01, max_batch=1024, log=None,
-                 *, scale_refit=False, refit_row_batch=128):
+                 *, scale_refit=False, refit_row_batch=128, seam="htr"):
     """Encode jobs sharing n; optional fixed-path FP16 scale refit is default-off.
+
+    seam: tail-biting seam rule for every trellis block, 'htr' (default, unchanged) or opt-in 'qtip'
+    (see htr/reference.py). It changes codes only; signs, scales, wire and decoders are unchanged.
 
     Returns qweight, scales, su, sv, What and Q. When scale_refit is enabled,
     adds prepared calibration-objective statistics under scale_refit.
     """
     if not isinstance(scale_refit, bool):
         raise TypeError('scale_refit must be a bool')
-    vit = VITERBI or _viterbi_ref
+    vit = _seam_viterbi(VITERBI or _viterbi_ref, seam)
     n = jobs[0]["W"].shape[1]
     assert n % 128 == 0
     nb = n // 16
