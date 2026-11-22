@@ -14,6 +14,9 @@ from safetensors.torch import save_file
 from . import encode, wire
 
 SKIP_PARTS = ("visual", "vision", "audio", "mtp", "lm_head", "embed")
+DEVICE = "cuda"
+REFIT_DAMP = 0.01            # encode_group's damping: the refit prepares the same rotated calibration objective
+REFIT_WIDTHS = (2, 3, 4, 5)  # htr.scale_refit.refit_packed supports the K2..K5 W1 widths
 
 
 def log(*a):
@@ -44,14 +47,38 @@ def resolve_policy(policy, cname, default_k):
     return default_k
 
 
-def quant_config(report, seam):
-    """quantization_config for a packed checkpoint. The default seam writes exactly the earlier config; an opt-in seam
-    is recorded as provenance under "encoder" (the wire and every decoder are unchanged, so loaders ignore it)."""
+def quant_config(report, seam, scale_refit=False):
+    """quantization_config for a packed checkpoint. The defaults write exactly the earlier config; an opt-in seam or
+    scale refit is recorded as provenance under "encoder" (the wire and every decoder are unchanged, so loaders
+    ignore it)."""
     qc = {"quant_method": "htr", "wire": "HTR-W1", "generator": "rdna24", "L": 16, "tile": 16,
           "rht_block": 128, "modules": {k: {"K": v["K"]} for k, v in report.items()}}
+    enc = {}
     if seam != "htr":
-        qc["encoder"] = {"seam": seam}
+        enc["seam"] = seam
+    if scale_refit:
+        enc["scale_refit"] = True
+    if enc:
+        qc["encoder"] = enc
     return qc
+
+
+def rel_proxy(W, What, H):
+    """Relative calibration proxy e H e^T / w H w^T in FP64 (the per-module report value)."""
+    E_ = (W.double() - What.double())
+    Hd = H.double()
+    return float(((E_ @ Hd) * E_).sum() / ((W.double() @ Hd) * W.double()).sum())
+
+
+def refit_group(jobs, res, damp=REFIT_DAMP):
+    """Opt-in post-encode FP16 row-scale refit of one encoded group (htr.scale_refit.refit_packed per matrix).
+
+    jobs: encode_group-style [{W, H}] in the original basis; res: that group's encoded (or cached) qweight/scales/su/sv.
+    Equal to encode_group(..., scale_refit=True), which runs the same pass on its own outputs. Codes and signs are
+    unchanged; returns the refit results (with each matrix's scale_refit diagnostic) and their rel_proxy values."""
+    from .scale_refit import refit_packed
+    outs = [refit_packed(jb["W"], jb["H"], r, damp=damp) for jb, r in zip(jobs, res)]
+    return outs, [rel_proxy(jb["W"], o["What"], jb["H"]) for jb, o in zip(jobs, outs)]
 
 
 def cache_matches(cached, names, K, seam):
@@ -146,12 +173,17 @@ def main():
     ap.add_argument("--seam", default="htr", choices=list(encode.SEAMS),
                     help="tail-biting seam rule: 'htr' (default, byte-identical to earlier releases) or opt-in 'qtip'; "
                          "changes codes only (wire and decoders unchanged); 'v1' supports 'htr' only")
+    ap.add_argument("--scale-refit", action="store_true",
+                    help="opt-in post-encode refit of the FP16 row scales (htr.scale_refit, encoder damping): codes, "
+                         "signs, wire and decoders unchanged. Applied after encoding or after loading a --cache group, "
+                         "whose files keep the unrefit codes, so a cached encode can be refit without re-encoding. "
+                         "K2..K5 only")
     ap.add_argument("--cache", default=None, help="shared per-group result dir (multi-GPU workers: atomic claim + save; final run assembles)")
     ap.add_argument("--order", default="up", choices=["up", "down"], help="group order for this worker")
     ap.add_argument("--worker-only", action="store_true", help="encode unclaimed groups into --cache and exit (no checkpoint write)")
     ap.add_argument("--offload", action="store_true", help="keep the model on CPU; move one group's weights/Hessians to the GPU at a time")
     args = ap.parse_args()
-    dev = "cuda"
+    dev = DEVICE
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from . import vit_v1, vit_v2
     encode.VITERBI = {"auto": vit_v2.viterbi_auto, "v1": vit_v1.viterbi, "ref": None}[args.viterbi]
@@ -180,6 +212,10 @@ def main():
             escapes.append((name, "policy" if K is None else f"shape {m}x{n}")); continue
         mods[name] = mod
         kmap[name] = (K, ck[0])
+    if args.scale_refit:
+        bad = sorted({K for K, _ in kmap.values()} - set(REFIT_WIDTHS))
+        if bad:
+            ap.error(f"--scale-refit supports K{REFIT_WIDTHS[0]}..K{REFIT_WIDTHS[-1]} only; the policy selects K {bad}")
     log(f"targets {len(mods)} params {sum(m.weight.numel() for m in mods.values())/1e6:.1f}M escapes {len(escapes)}")
     if args.hessians and os.path.isdir(args.hessians):
         H = LayerDirHessians(args.hessians, dev)
@@ -239,11 +275,7 @@ def main():
         else:
             jobs = [dict(W=mods[nm].weight.data.to(dev).float(), H=H[nm]) for nm in names]
             res = encode.encode_group(jobs, K, seed=args.seed + 104729 * gi, shared_su=True, seam=args.seam)
-            rels = []
-            for jb, r in zip(jobs, res):
-                E_ = (jb["W"].double() - r["What"].double())
-                Hd = jb["H"].double()
-                rels.append(float(((E_ @ Hd) * E_).sum() / ((jb["W"].double() @ Hd) * jb["W"].double()).sum()))
+            rels = [rel_proxy(jb["W"], r["What"], jb["H"]) for jb, r in zip(jobs, res)]
             del jobs
             if cpath:
                 keep = [{k: r[k].contiguous().cpu() for k in ("qweight", "scales", "su", "sv")} | {"What": r["What"].bfloat16().cpu()} for r in res]
@@ -256,6 +288,10 @@ def main():
                     continue
         if args.worker_only:
             continue
+        if args.scale_refit:            # post-encode: the group cache above keeps the unrefit codes
+            jobs = [dict(W=mods[nm].weight.data.to(dev).float(), H=H[nm]) for nm in names]
+            res, rels = refit_group(jobs, res)
+            del jobs
         for nm, r, rel in zip(names, res, rels):
             ck = kmap[nm][1]
             pre = ck[:-7]
@@ -265,9 +301,12 @@ def main():
             out_t[pre + ".htr_su"] = r["su"].contiguous().to(od)
             out_t[pre + ".htr_sv"] = r["sv"].contiguous().to(od)
             report[pre] = dict(K=K, shape=list(mods[nm].weight.shape), rel_proxy=rel, group=gi)
+            if args.scale_refit:
+                report[pre]["scale_refit"] = r["scale_refit"]
             if args.save_fake:
                 fake[ck] = r["What"].bfloat16().cpu()
-        log(f"group {gi+1}/{len(glist)} K{K} {names} {time.time()-t:.0f}s" + (" (cache)" if cached is not None else ""))
+        log(f"group {gi+1}/{len(glist)} K{K} {names} {time.time()-t:.0f}s" + (" refit" if args.scale_refit else "")
+            + (" (cache)" if cached is not None else ""))
         del res
         torch.cuda.empty_cache()
     del model
@@ -310,7 +349,7 @@ def _write(src, out, files, replaced, new_t, report, escapes, meta, args, quanti
     json.dump({"metadata": {"total_size": total}, "weight_map": wmap}, open(os.path.join(out, "model.safetensors.index.json"), "w"), indent=1)
     cfg = json.load(open(os.path.join(src, "config.json")))
     if quantized:
-        cfg["quantization_config"] = quant_config(report, args.seam)
+        cfg["quantization_config"] = quant_config(report, args.seam, getattr(args, "scale_refit", False))
     json.dump(cfg, open(os.path.join(out, "config.json"), "w"), indent=2)
     nq = sum(v["shape"][0] * v["shape"][1] for v in report.values())
     bits = sum(v["shape"][0] * v["shape"][1] * v["K"] + 16 * v["shape"][0] + (v["shape"][0] + v["shape"][1]) for v in report.values())
