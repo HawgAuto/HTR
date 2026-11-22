@@ -67,14 +67,26 @@ class LayerDirHessians:
     def _layer(self, name):
         m = re.search(r"layers\.(\d+)\.", name)
         return int(m.group(1)) if m else None
-    def __contains__(self, name):
-        return self._layer(name) in self.files
-    def __getitem__(self, name):
+    def _load(self, name):
         li = self._layer(name)
+        if li not in self.files:
+            return False
         if li != self.cur:
-            self.cache = torch.load(self.files[li], map_location="cpu", weights_only=False)
-            self.cur = li
-        return self.cache[name].to(self.dev)
+            cache = torch.load(self.files[li], map_location="cpu", weights_only=False)
+            keys = {}
+            for key in cache:
+                c = canon(key)
+                if c in keys:
+                    raise ValueError(f"ambiguous Hessian module {c!r}: {keys[c]!r}, {key!r}")
+                keys[c] = key
+            self.cache, self.keys, self.cur = cache, keys, li
+        return True
+    def __contains__(self, name):
+        return self._load(name) and canon(name) in self.keys
+    def __getitem__(self, name):
+        if name not in self:
+            raise KeyError(name)
+        return self.cache[self.keys[canon(name)]].to(self.dev)
 
 
 @torch.no_grad()
