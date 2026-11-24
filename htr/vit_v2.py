@@ -249,6 +249,14 @@ TH = 256
 # k_group (default, the shipped kernel) or a wave-cooperative variant (ROCm only; bit-identical on the admitted domain,
 # otherwise the call falls back to k_group). HTR_VITERBI_IMPL sets the process default.
 IMPL = os.environ.get("HTR_VITERBI_IMPL", "group")
+_EXPLICIT_IMPL = "HTR_VITERBI_IMPL" in os.environ
+# Verified gfx1151 full-encode winners (fullencode-001: 800/800 K3, 24/24 K4, 24/24 K5 byte-identical).
+# Values: (impl, r, threads, eligible B sizes).
+_AUTO_ROUTES = {
+    3: ("coop_dpp", 3, 512, (256, 512, 640, 768, 1024)),
+    4: ("coop_dpp", 2, 256, (256, 512, 768, 1024)),
+    5: ("coop_dpp_ug4", 2, 512, (256, 512, 768, 1024)),
+}
 COOP_VARIANT = {"coop": 0, "coop_dpp": 1, "coop_ug4": 2, "coop_dpp_ug4": 3}
 
 
@@ -273,7 +281,7 @@ def coop_admissible(x, w, cb, K, th):
     return bool(torch.isfinite(x).all()) and bool(torch.isfinite(cb).all()) and bool((torch.isfinite(w) & (w > 0)).all())
 
 
-def viterbi(x, w, cb, K, tailbite=True, rmax=None, th=None, seam="htr", impl=None):
+def viterbi(x, w, cb, K, tailbite=True, rmax=None, th=None, seam="htr", impl=None, *, _fallback_geometry=None):
     """seam: 'htr' (default, unchanged) or opt-in 'qtip' (pass 1 on the block rolled by T/2, j0 taken mid-path);
     see htr/reference.py. Both rules run the same pinned pass 2; the wire and decoders are unchanged.
     impl: None (module IMPL), 'group' (k_group) or a COOP_VARIANT key. Every impl returns identical states."""
@@ -299,6 +307,8 @@ def viterbi(x, w, cb, K, tailbite=True, rmax=None, th=None, seam="htr", impl=Non
         def run(xx, ww, jj, use_j0, bplo):    # bplo: backpointer rows below it are never read and are not written
             return m.run_coop(xx, ww, cb, jj, K, use_j0, rmax, th, variant, bplo)
     else:
+        if _fallback_geometry is not None:
+            rmax, th = _fallback_geometry  # automatic proposal refused: restore the original group geometry
         def run(xx, ww, jj, use_j0, bplo):
             return m.run(xx, ww, cb, jj, K, use_j0, rmax, th)
     dummy = torch.zeros(1, dtype=torch.int64, device=dev)
@@ -340,6 +350,15 @@ def viterbi_auto(x, w, cb, K, tailbite=True, seam="htr", impl=None):
     with torch.no_grad():
         if torch.version.hip:   # gfx1151 sweep (sweep_rocm.py, 1024 tiles): K2 r4/256 1.16 s, K3 r3/512 1.24 s, K4 r2/512 1.77 s; v1 2.35/2.81/4.33
             r, th = {2: (4, 256), 3: (3, 512), 4: (2, 512), 5: (2, 512), 6: (1, 512), 8: (1, 512)}[K]
+            if (K in _AUTO_ROUTES and impl is None and not _EXPLICIT_IMPL and IMPL == "group"
+                    and seam == "qtip" and tailbite and x.is_cuda and w.device == x.device == cb.device):
+                proposal, pr, pt, batches = _AUTO_ROUTES[K]
+                if (len(x.shape) == 2 and x.shape[0] in batches and x.shape[1] == 256
+                        and w.shape == x.shape and tuple(cb.shape) == (1 << 16,)):
+                    props = torch.cuda.get_device_properties(x.device)
+                    if getattr(props, "gcnArchName", "").partition(":")[0] == "gfx1151":
+                        return viterbi(x, w, cb, K, tailbite, rmax=pr, th=pt, seam=seam,
+                                       impl=proposal, _fallback_geometry=(r, th))
             return viterbi(x, w, cb, K, tailbite, rmax=r, th=th, seam=seam, impl=impl)
         if K == 3 and seam == "htr":
             from . import vit_v1
