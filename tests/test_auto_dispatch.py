@@ -1,10 +1,9 @@
-"""Standalone unit tests for D3 automatic gfx1151 cooperative Viterbi dispatch in htr.vit_v2."""
+"""Standalone unit tests for D3 automatic gfx1151 cooperative Viterbi dispatch and backtrack optimization."""
 import importlib.util
 import os
 import pathlib
-import sys
 import unittest
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 from unittest import mock
 
 import torch
@@ -12,9 +11,10 @@ import torch
 VIT_PATH = pathlib.Path(__file__).resolve().parents[1] / "htr" / "vit_v2.py"
 GROUP = {2: (4, 256), 3: (3, 512), 4: (2, 512), 5: (2, 512), 6: (1, 512), 8: (1, 512)}
 EXPECTED = {
-    3: ("coop", 3, 3, 512, False, 1, 128),
-    4: ("coop", 4, 2, 256, False, 1, 128),
-    5: ("coop", 5, 2, 512, False, 3, 128),
+    2: ("coop", 2, 5, 512, False, 3),
+    3: ("coop", 3, 3, 512, False, 1),
+    4: ("coop", 4, 2, 256, False, 1),
+    5: ("coop", 5, 2, 512, False, 3),
 }
 
 
@@ -72,19 +72,20 @@ def _observe(m, K=4, B=256, T=256, seam="qtip", tail=True, impl=None,
 
 
 class TestAutoDispatch(unittest.TestCase):
-    def test_verified_widths_dispatch_on_gfx1151_qtip(self):
+    def test_verified_widths_dispatch_on_gfx1151_both_seams(self):
         m = _load()
         for K, (impl, r, th, batches) in m._AUTO_ROUTES.items():
-            for B in batches:
-                with self.subTest(K=K, B=B):
-                    self.assertEqual(_observe(m, K=K, B=B), EXPECTED[K])
+            for seam, bplo in (("qtip", 128), ("htr", 256)):
+                for B in batches:
+                    with self.subTest(K=K, seam=seam, B=B):
+                        self.assertEqual(_observe(m, K=K, B=B, seam=seam), (*EXPECTED[K], bplo))
 
-    def test_unmeasured_shapes_seams_and_arches_stay_group(self):
+    def test_unmeasured_shapes_widths_and_arches_stay_group(self):
         m = _load()
         for kw in (
-            dict(K=2, B=256), dict(K=6, B=256), dict(K=8, B=256),
+            dict(K=6, B=256), dict(K=8, B=256),
             dict(K=4, B=640), dict(K=3, B=128), dict(K=5, B=1025),
-            dict(K=3, B=256, T=255), dict(K=3, B=256, seam="htr"),
+            dict(K=3, B=256, T=255), dict(K=3, B=256, seam="htr", tail=False),
             dict(K=4, B=256, arch="gfx1100"), dict(K=4, B=256, arch=None),
             dict(K=4, B=256, device="cpu"),
         ):
