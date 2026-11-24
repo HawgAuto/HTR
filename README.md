@@ -62,7 +62,7 @@ python -m htr.quantize --help
 
 The tests run on CPU and include a real matrix encode → safetensors → reopen → decode round trip. [Usage](docs/USAGE.md) covers the matrix API, checkpoint encoding, calibration, output heads, and architecture-specific adapters.
 
-**Current release: v0.1.0rc1, codec and encoder source preview.** The repository includes experimental packed-linear/vLLM integration; a supported HTR loader is required for model serving. See [component status](docs/RELEASE_STATUS.md) for the verified paths and native-runtime work. Model weights and calibration datasets are not bundled.
+**Current release: v0.2.0.** The repository includes experimental packed-linear/vLLM integration; a supported HTR loader is required for model serving. See [component status](docs/RELEASE_STATUS.md) for the verified paths and native-runtime work. Model weights and calibration datasets are not bundled.
 
 ## Explore the implementation
 

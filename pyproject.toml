@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "halo-trellis"
-version = "0.1.0rc1"
+version = "0.2.0"
 description = "HTR: Halo Trellis weight quantization and encoder for Strix Halo research"
 readme = "README.md"
 requires-python = ">=3.10"

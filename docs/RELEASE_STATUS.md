@@ -1,5 +1,16 @@
 # HTR component status
 
+## v0.2.0: QTIP seam default, opt-in scale refit, cooperative Viterbi acceleration, and cache/reader hardening
+
+Highlights since `v0.1.0-rc.1`:
+
+- **QTIP tail-biting seam (`--seam {htr,qtip}`):** Default for new `htr.quantize` CLI encodes (measured MiMo-9B K3 proxy −9.12%, teacher KL −8.02%); explicit `--seam htr` preserves legacy encode/cache compatibility (required with `--viterbi v1`). Opt-in `--seam` is also exposed in `htr.encode_q38` and `htr.moe_encode` (default `htr`).
+- **Opt-in fixed-path FP16 row-scale refit (`--scale-refit`):** Available across `htr.quantize`, `htr.encode_q38`, and `htr.moe_encode` (default OFF, K2–K5, codes/signs preserved, recipe-safe resume).
+- **Wave-cooperative Viterbi acceleration (`htr/vit_v2.py`):** Automatic gfx1151 cooperative dispatch (`_AUTO_ROUTES`) plus compile-time specialized `k_group_coop_spec` kernels (zero scratch spills), single-launch GPU backtracking and in-place tail-biting mask, and trimmed pass-1 backpointer allocation — 100% bit-identical to shipped `k_group` with measured full-encode speedups (~1.20× K3, ~1.48× K4, ~2.90× K5).
+- **Item 5 router-weighted MoE Hessians (`htr/moe_encode.py`):** Opt-in `--hessian-mode {hard,softp,shrink}` (default `hard`) implementing streaming FP32 soft-p and low-n shrinkage Hessians.
+- **Cache & reader safety:** Group cache seed/sign + weight/Hessian SHA-256 verification (`--require-cache-inputs` for strict refusal of legacy caches) in `htr.quantize`; canonical layer-dir Hessian binding; fail-closed `HTR-W1`/`rdna24` wire & generator identity guards in `htr.vllm_plugin`.
+- **Verification:** 131/131 CPU regression tests pass in the pinned ROCm image alongside native gfx1151 hardware parity and timing verification.
+
 ## v0.1.0rc1: codec and encoder source preview
 
 The release packages HTR's W1 codec, reference encoder, accelerated encoder sources, checkpoint tools, and experimental packed-linear integration. The [source manifest](../provenance/source-snapshot.json) records imported and packaged file hashes; the [prerelease](https://github.com/HawgAuto/HTR/releases/tag/v0.1.0-rc.1) provides an installable source wheel and checksum.
