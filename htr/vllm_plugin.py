@@ -18,12 +18,26 @@ def canon(name):
     return name[i:] if i >= 0 else name
 
 
+def _w1(spec, *, require_wire=False):
+    """Reject a declared identity that this rdna24-only reader cannot decode.
+
+    A missing member identity inherits the checked parent. For old direct configs,
+    missing keys retain the original W1/rdna24 defaults. Dense Quark overlays have
+    always required a wire tag. Encoder recipe fields do not select a decoder.
+    """
+    wire = spec.get("wire", None if require_wire else "HTR-W1")
+    generator = spec.get("generator", "rdna24")
+    if wire != "HTR-W1" or generator != "rdna24":
+        raise ValueError(f"HTR reader supports HTR-W1/rdna24 only; got wire={wire!r}, generator={generator!r}")
+    return spec
+
+
 @register_quantization_config("htr")
 class HTRConfig(QuantizationConfig):
-    def __init__(self, modules, wire="HTR-W1"):
+    def __init__(self, modules, wire="HTR-W1", generator="rdna24"):
         super().__init__()
-        assert wire == "HTR-W1", wire
-        self.modules = {canon(k): int(v["K"]) for k, v in modules.items()}
+        _w1({"wire": wire, "generator": generator})
+        self.modules = {canon(k): int(_w1(v)["K"]) for k, v in modules.items()}
 
     def get_name(self):
         return "htr"
@@ -41,7 +55,7 @@ class HTRConfig(QuantizationConfig):
 
     @classmethod
     def from_config(cls, config):
-        return cls(config.get("modules", {}), config.get("wire", "HTR-W1"))
+        return cls(config.get("modules", {}), config.get("wire", "HTR-W1"), config.get("generator", "rdna24"))
 
     def get_quant_method(self, layer, prefix):
         from vllm.model_executor.layers.vocab_parallel_embedding import ParallelLMHead
@@ -164,8 +178,8 @@ def _htr_overlay_method(cfg, layer, prefix):
         return None
     mods = cfg.__dict__.get("_htr_modules")
     if mods is None:
-        assert ov.get("wire") == "HTR-W1", ov.get("wire")
-        mods = {canon(k): int(v["K"]) for k, v in ov["modules"].items()}
+        _w1(ov, require_wire=True)
+        mods = {canon(k): int(_w1(v)["K"]) for k, v in ov["modules"].items()}
         cfg.__dict__["_htr_modules"] = mods
     c = canon(prefix)
     parent, _, leaf = c.rpartition(".")
@@ -236,6 +250,8 @@ def install_lmhead_overlay():
         ov = _current_htr_overlay()
         ent = ov.get("lm_head") if ov else None
         if ent is not None and prefix.split(".")[-1] == "lm_head" and "mtp" not in prefix.split(".") and not _DRAFT_BUILD[0]:
+            _w1(ov)
+            _w1(ent)
             qc = kw.get("quant_config", args[6] if len(args) > 6 else None)
             if qc is not None:
                 raise ValueError(f"HTR lm_head: {prefix} already has quant_config {type(qc).__name__} (DIRECT_W8A16 + HTR head?)")
@@ -385,6 +401,11 @@ def install_hc_overlay():
         hc = (ov or {}).get("hc")
         mods = hc["modules"] if hc else {}
         if mods and "mtp" not in prefix.split(".") and any(k.startswith(prefix + ".") for k in mods):
+            _w1(ov)
+            _w1(hc)
+            for name, spec in mods.items():
+                if name.startswith(prefix + "."):
+                    _w1(spec)
             w8 = hcm._w8
             oc = w8.config_or_none
             base = oc()
