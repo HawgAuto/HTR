@@ -7,7 +7,7 @@ calibration text) -> group linears that consume the same input tensor (shared in
 -> encode each group (RHT + block-LDLQ + tail-biting trellis Viterbi) -> write safetensors: quantized linears as
 <prefix>.htr_{qweight,scales,su,sv}, every other tensor copied byte-for-byte from the source shards.
 """
-import argparse, json, os, random, re, shutil, sys, time, glob
+import argparse, hashlib, json, os, random, re, shutil, sys, time, glob
 import torch
 from safetensors import safe_open
 from safetensors.torch import save_file
@@ -86,6 +86,61 @@ def cache_matches(cached, names, K, seam):
     return cached["names"] == names and cached["K"] == K and cached.get("seam", "htr") == seam
 
 
+def check_cache_seed(cached, names, shapes, group_seed):
+    """Verify a worker's exact seed when recorded, and its actual RHT sign bytes even for old caches."""
+    if "group_seed" in cached and (type(cached["group_seed"]) is not int or cached["group_seed"] != group_seed):
+        raise ValueError("cache group seed mismatch; use the matching --seed and cache")
+    results = cached.get("res")
+    if not isinstance(results, (list, tuple)) or len(results) != len(names) or len(shapes) != len(names):
+        raise ValueError("cache seed check: incomplete group")
+    for ji, (name, (m, n), result) in enumerate(zip(names, shapes, results)):
+        # Legacy caches lack the original integer. Their packed signs can establish consistency,
+        # not uniqueness (different seeds may produce the same signs on a given RNG backend).
+        su, sv = encode.make_signs(n, m, group_seed, ji, shared_su=True)
+        for field, expected in (("su", su), ("sv", sv)):
+            observed = result.get(field) if isinstance(result, dict) else None
+            if (not isinstance(observed, torch.Tensor) or observed.device.type != "cpu"
+                    or observed.dtype != torch.uint8 or not torch.equal(observed, wire.pack_signs(expected))):
+                raise ValueError(f"cache seed/sign mismatch for {name}.{field}; use the matching --seed and cache")
+
+
+def _tensor_digest(t):
+    """Hash logical matrix values in row order, including dtype, shape and strides, a few MiB at a time."""
+    t = t.detach()
+    h = hashlib.sha256(f"{t.dtype}|{tuple(t.shape)}|{tuple(t.stride())}|".encode())
+    rows = max(1, (4 << 20) // max(1, t.shape[1] * t.element_size()))
+    for chunk in t.split(rows):
+        h.update(chunk.contiguous().cpu().view(torch.uint8).numpy())
+    return h.hexdigest()
+
+
+def group_input_identity(names, mods, hessians):
+    # Use the loaded BF16 model values, not paths. A layer-directory cache already has a host copy.
+    get_h = hessians.host_tensor if isinstance(hessians, LayerDirHessians) else hessians.__getitem__
+    members, shared = {}, {}
+    for name in names:
+        h = get_h(name)
+        if h not in shared:        # repeated Tensor object within this input group only
+            shared[h] = _tensor_digest(h)
+        members[name] = {"weight": _tensor_digest(mods[name].weight), "hessian": shared[h]}
+    return {"format": "typed-layout-sha256-v1", "members": members}
+
+
+def check_input_identity(record, expected):
+    if not isinstance(record, dict) or set(record) != set(expected) or record["format"] != expected["format"]:
+        raise ValueError("invalid cache input identity format")
+    members = record["members"]
+    if not isinstance(members, dict) or set(members) != set(expected["members"]):
+        raise ValueError("invalid cache input identity members")
+    for name, fields in expected["members"].items():
+        got = members[name]
+        if not isinstance(got, dict) or set(got) != set(fields):
+            raise ValueError(f"invalid cache input identity for {name}")
+        for field, digest in fields.items():
+            if not isinstance(got[field], str) or got[field] != digest:
+                raise ValueError(f"cache {field} differs for {name}; use a fresh cache")
+
+
 class LayerDirHessians:
     """E08-format Hessian cache: <dir>/layerNNN.pt = {module name: H}. Loads one layer file at a time (MiMo-9B: 25 GB total)."""
     def __init__(self, d, dev):
@@ -110,10 +165,12 @@ class LayerDirHessians:
         return True
     def __contains__(self, name):
         return self._load(name) and canon(name) in self.keys
-    def __getitem__(self, name):
+    def host_tensor(self, name):
         if name not in self:
             raise KeyError(name)
-        return self.cache[self.keys[canon(name)]].to(self.dev)
+        return self.cache[self.keys[canon(name)]]
+    def __getitem__(self, name):
+        return self.host_tensor(name).to(self.dev)
 
 
 @torch.no_grad()
@@ -179,6 +236,8 @@ def main():
                          "whose files keep the unrefit codes, so a cached encode can be refit without re-encoding. "
                          "K2..K5 only")
     ap.add_argument("--cache", default=None, help="shared per-group result dir (multi-GPU workers: atomic claim + save; final run assembles)")
+    ap.add_argument("--require-cache-inputs", action="store_true", default=argparse.SUPPRESS,
+                    help="refuse legacy group packets with no weight/Hessian digests; new packets always verify")
     ap.add_argument("--order", default="up", choices=["up", "down"], help="group order for this worker")
     ap.add_argument("--worker-only", action="store_true", help="encode unclaimed groups into --cache and exit (no checkpoint write)")
     ap.add_argument("--offload", action="store_true", help="keep the model on CPU; move one group's weights/Hessians to the GPU at a time")
@@ -251,12 +310,14 @@ def main():
         json.dump(dict(groups=[names for _, names in glist], bits=args.bits, seed=args.seed, seam=args.seam),
                   open(os.path.join(args.cache, f"plan.{os.getpid()}.json"), "w"))
     host = os.uname().nodename + ":" + (torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu")
+    warned_legacy_inputs = False
     for gi in gidx:
         gk, names = glist[gi]
         Ks = {kmap[nm][0] for nm in names}
         K = max(Ks)
         t = time.time()
         cpath = os.path.join(args.cache, f"g{gi:04d}.pt") if args.cache else None
+        group_seed = args.seed + 104729 * gi
         cached = None
         if cpath and os.path.exists(cpath):
             cached = torch.load(cpath, map_location="cpu", weights_only=False)
@@ -277,15 +338,24 @@ def main():
                     raise ValueError(f"cache group {gi} has different names, K or seam; "
                                      "use a matching cache (legacy caches require --seam htr)")
         if cached is not None:
+            check_cache_seed(cached, names, [mods[nm].weight.shape for nm in names], group_seed)
+            if "input_identity" in cached:
+                check_input_identity(cached["input_identity"], group_input_identity(names, mods, H))
+            elif getattr(args, "require_cache_inputs", False):
+                raise ValueError("legacy cache has no weight/Hessian identity; use a fresh cache")
+            elif not warned_legacy_inputs:
+                log("warning: legacy cache has unverified weights/Hessians; use --require-cache-inputs to refuse")
+                warned_legacy_inputs = True
             res, rels = cached["res"], cached["rel"]
         else:
             jobs = [dict(W=mods[nm].weight.data.to(dev).float(), H=H[nm]) for nm in names]
-            res = encode.encode_group(jobs, K, seed=args.seed + 104729 * gi, shared_su=True, seam=args.seam)
+            identity = group_input_identity(names, mods, H) if cpath else None
+            res = encode.encode_group(jobs, K, seed=group_seed, shared_su=True, seam=args.seam)
             rels = [rel_proxy(jb["W"], r["What"], jb["H"]) for jb, r in zip(jobs, res)]
             del jobs
             if cpath:
                 keep = [{k: r[k].contiguous().cpu() for k in ("qweight", "scales", "su", "sv")} | {"What": r["What"].bfloat16().cpu()} for r in res]
-                torch.save(dict(names=names, K=K, seam=args.seam, res=keep, rel=rels, host=host, seconds=time.time() - t), cpath + ".tmp")
+                torch.save(dict(names=names, K=K, seam=args.seam, group_seed=group_seed, input_identity=identity, res=keep, rel=rels, host=host, seconds=time.time() - t), cpath + ".tmp")
                 os.replace(cpath + ".tmp", cpath)
                 if args.worker_only:
                     log(f"group {gi+1}/{len(glist)} K{K} {names} {time.time()-t:.0f}s -> cache")

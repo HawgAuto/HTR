@@ -42,7 +42,7 @@ python -m htr.quantize \
 - **Calibration:** supply representative text and an existing Hessian file or `layerNNN.pt` directory as appropriate. The calibration text is also used to identify shared-input groups.
 - **CPU offload:** `--offload` keeps the source model on CPU and moves one encode group to the GPU. It requires existing Hessians and substantial host RAM; it does not perform low-memory first-time calibration.
 - **Width policy:** `--policy` accepts regex width/escape overrides. K2–K5 is the practical family. The default exclusions cover embeddings, the output head, vision/audio/MTP families, and unsupported dimensions; excluded tensors retain their source representation.
-- **Group cache:** `--cache` supports reuse by same-host workers. Match source, tensor policy, and seeds; use a separate cache for a different encoding identity.
+- **Group cache:** `--cache` supports reuse by same-host workers. Match source, tensor policy, and seeds; use a separate cache for a different encoding identity. New dense group files record the group seed (`--seed + 104729 × group index`). A cache hit checks both that seed (if recorded) and each matrix’s packed rotation signs before reuse, including when a worker finishes while the assembler waits. A matching legacy cache proves only that its signs agree, not that its original integer seed or calibration data were the same.
 
 The CPU reference is exercised by the source-preview tests. Full-model conversion and serving require their own model/backend validation.
 
