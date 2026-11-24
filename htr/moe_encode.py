@@ -39,6 +39,54 @@ def rel(W, Q, H):
     return float(((E @ Hd) * E).sum() / ((Wd @ Hd) * Wd).sum())
 
 
+HESSIAN_MODES = ("hard", "softp", "shrink")
+
+
+def gram_fp32(A, wts=None):
+    """Exact raw FP32 Gram matrix (Item 5 MACaQ formulation), symmetrized."""
+    Af = A.float()
+    B = Af if wts is None else Af * wts.float()[:, None]
+    M = B.T @ Af
+    return 0.5 * M + 0.5 * M.T
+
+
+@torch.no_grad()
+def router_probs(X, gate_weight, batch=8192, dev=None):
+    """Compute exact FP32 softmax router probabilities [N, E] in bounded token batches."""
+    dev = dev or gate_weight.device
+    gw = gate_weight.float().to(dev)
+    out = torch.empty((X.shape[0], gw.shape[0]), dtype=torch.float32, device="cpu")
+    for lo in range(0, X.shape[0], batch):
+        xx = X[lo:lo + batch].to(dev).float()
+        out[lo:lo + batch] = F.softmax(xx @ gw.T, dim=-1).cpu()
+    return out
+
+
+@torch.no_grad()
+def soft_hessians(X, p_e, G, U, batch=8192):
+    """Item 5 streaming FP32 soft-p Hessians (Hin, Hdn) over all calibration tokens."""
+    dev = G.device
+    Hin = torch.zeros((X.shape[1], X.shape[1]), device=dev, dtype=torch.float32)
+    Hdn = torch.zeros((G.shape[0], G.shape[0]), device=dev, dtype=torch.float32)
+    for lo in range(0, X.shape[0], batch):
+        xx = X[lo:lo + batch].to(dev)
+        ww = p_e[lo:lo + batch].to(dev)
+        Hin.add_(gram_fp32(xx, ww))
+        A = F.silu(xx @ G.T) * (xx @ U.T)
+        Hdn.add_(gram_fp32(A, ww))
+    denom = p_e.float().sum().clamp_min(1.0).to(dev)
+    return Hin / denom, Hdn / denom
+
+
+def blend_hessians(H_hard, H_soft, n, n0=1024.0):
+    """Item 5 low-n shrinkage blend: (n * H_hard + n0 * H_soft) / (n + n0)."""
+    if n <= 0:
+        return H_soft
+    w_hard = float(n) / (float(n) + float(n0))
+    w_soft = float(n0) / (float(n) + float(n0))
+    return w_hard * H_hard + w_soft * H_soft
+
+
 def packed_bytes_per_expert(K):
     """Exact HTR-W1 payload: qweight int32 [m/16, n/16, 8K] + FP16 row scales [m] + packed signs su [n/8], sv [m/8]."""
     return sum((m // 16) * (n // 16) * 8 * K * 4 + 2 * m + n // 8 + m // 8 for m, n in SHAPES.values())
@@ -110,6 +158,7 @@ class SourceExperts:
     WANT = {"gate_up_proj": [512, 1280, 2560], "down_proj": [512, 2560, 640]}
 
     def __init__(self, L, src):
+        self.L, self.src = L, src
         wm = M._index(src); p = f"model.language_model.layers.{L}.mlp.experts."
         self.names = {n: p + n for n in self.WANT}
         self.fh = {n: safe_open(os.path.join(src, wm[k]), "pt") for n, k in self.names.items()}
@@ -120,6 +169,12 @@ class SourceExperts:
 
     def chunk(self, e0, e1):
         return tuple(self.fh[n].get_slice(self.names[n])[e0:e1] for n in ("gate_up_proj", "down_proj"))
+
+    def router_weight(self):
+        wm = M._index(self.src)
+        k = f"model.language_model.layers.{self.L}.mlp.gate.weight"
+        with safe_open(os.path.join(self.src, wm[k]), "pt", device="cpu") as fh:
+            return fh.get_tensor(k)
 
 
 def write_plan_if_absent(path, plan):
@@ -150,6 +205,14 @@ def main():
     ap.add_argument("--damp", type=float, default=0.01)
     ap.add_argument("--scale-refit", action="store_true",
                     help="opt-in fixed-path FP16 row-scale refit (K2..K5); use a separate output tree")
+    ap.add_argument("--seam", default="htr", choices=list(encode.SEAMS),
+                    help="tail-biting Viterbi seam rule (default htr preserves legacy chunks; qtip is opt-in)")
+    ap.add_argument("--hessian-mode", default="hard", choices=list(HESSIAN_MODES),
+                    help="router Hessian estimator: hard (default legacy), softp (Item 5 MACaQ), or shrink")
+    ap.add_argument("--shrink-n0", type=float, default=1024.0,
+                    help="pseudo-token weight for --hessian-mode shrink (default 1024)")
+    ap.add_argument("--softp-batch", type=int, default=8192,
+                    help="token batch size for streaming FP32 softp/shrink Hessians")
     ap.add_argument("--rev", action="store_true", help="walk layers in reverse (second worker)")
     ap.add_argument("--x-cpu", action="store_true", help="keep the layer dump X on CPU, gather per expert")
     ap.add_argument("--max-chunks", type=int, default=0, help="stop cleanly after this many new chunks; 0 means all")
@@ -157,16 +220,29 @@ def main():
     a = ap.parse_args()
     if a.scale_refit and a.bits not in (2, 3, 4, 5):
         ap.error("--scale-refit supports K2..K5 only")
-    # Missing provenance means the legacy, unrefit recipe. Reject mixing before device access.
+    if a.shrink_n0 <= 0:
+        ap.error("--shrink-n0 must be positive")
+    if a.softp_batch <= 0:
+        ap.error("--softp-batch must be positive")
+    non_legacy = a.scale_refit or a.seam != "htr" or a.hessian_mode != "hard"
     pf = os.path.join(a.out, "PLAN.json")
+    def _check_plan_recipe(plan_obj):
+        prev_refit = plan_obj.get("scale_refit", False)
+        if type(prev_refit) is not bool or prev_refit != a.scale_refit:
+            raise ValueError("scale-refit PLAN mismatch; use a separate output tree")
+        if plan_obj.get("seam", "htr") != a.seam:
+            raise ValueError("seam PLAN mismatch; use a separate output tree")
+        if plan_obj.get("hessian_mode", "hard") != a.hessian_mode:
+            raise ValueError("hessian-mode PLAN mismatch; use a separate output tree")
+        if a.hessian_mode == "shrink" and plan_obj.get("shrink_n0", 1024.0) != a.shrink_n0:
+            raise ValueError("shrink-n0 PLAN mismatch; use a separate output tree")
     if os.path.exists(pf):
         with open(pf) as f:
-            previous_refit = json.load(f).get("scale_refit", False)
-        if type(previous_refit) is not bool or previous_refit != a.scale_refit:
-            raise ValueError("scale-refit PLAN mismatch; use a separate output tree")
-    elif a.scale_refit and glob.glob(os.path.join(a.out, "L*", "c*.pt")):
-        raise ValueError("scale-refit cannot reuse chunks without PLAN provenance")
+            _check_plan_recipe(json.load(f))
+    elif non_legacy and glob.glob(os.path.join(a.out, "L*", "c*.pt")):
+        raise ValueError("scale-refit cannot reuse chunks without PLAN provenance" if a.scale_refit else "non-legacy recipe cannot reuse chunks without PLAN provenance")
     refit_kw: dict[str, Any] = dict(scale_refit=True, refit_row_batch=128) if a.scale_refit else {}
+    seam_kw: dict[str, Any] = dict(seam=a.seam) if a.seam != "htr" else {}
     assert a.max_chunks >= 0 and 2 <= a.bits <= 8 and 512 % a.chunk == 0
     done_chunks = 0
     dev = "cuda"; os.makedirs(a.out, exist_ok=True)
@@ -174,12 +250,19 @@ def main():
     margin = int(a.margin_gb * 2**30); per_chunk = chunk_bytes_estimate(a.bits, a.chunk)
     pf = os.path.join(a.out, "PLAN.json")
     keys = ("bits", "chunk", "seed", "damp", "dump", "src")
-    write_plan_if_absent(pf, dict({k: getattr(a, k) for k in keys}, layers=a.layers, format=FORMAT,
-                                 **({"scale_refit": True} if a.scale_refit else {})))
+    plan_extra: dict[str, Any] = {}
+    if a.scale_refit:
+        plan_extra["scale_refit"] = True
+    if a.seam != "htr":
+        plan_extra["seam"] = a.seam
+    if a.hessian_mode != "hard":
+        plan_extra["hessian_mode"] = a.hessian_mode
+        if a.hessian_mode == "shrink":
+            plan_extra["shrink_n0"] = a.shrink_n0
+    write_plan_if_absent(pf, dict({k: getattr(a, k) for k in keys}, layers=a.layers, format=FORMAT, **plan_extra))
     with open(pf) as f:
         plan = json.load(f)
-    if type(plan.get("scale_refit", False)) is not bool or plan.get("scale_refit", False) != a.scale_refit:
-        raise ValueError("scale-refit PLAN mismatch after publication; use a separate output tree")
+    _check_plan_recipe(plan)
     assert plan.get("format") == FORMAT and all(plan[k] == getattr(a, k) for k in keys), "PLAN mismatch"
     Ls = [int(x) for x in a.layers.split(",")]
     todo = sum(not os.path.exists(os.path.join(a.out, f"L{L}", f"c{e0:03d}.pt")) for L in Ls for e0 in range(0, 512, a.chunk))
@@ -202,7 +285,8 @@ def main():
         X, ids, nwin = load_dump(os.path.join(a.dump, f"L{L}"), "cpu" if a.x_cpu else dev)
         S = SourceExperts(L, a.src)
         R = M.Release(L, a.reference)
-        log(f"L{L} K{a.bits} [{gpu}] dump {nwin} windows rows {X.shape[0]} load {time.time()-t:.0f}s")
+        P_soft = router_probs(X, S.router_weight(), batch=a.softp_batch, dev=dev) if a.hessian_mode != "hard" else None
+        log(f"L{L} K{a.bits} [{gpu}] dump {nwin} windows rows {X.shape[0]} mode {a.hessian_mode} seam {a.seam} load {time.time()-t:.0f}s")
         for e0 in range(0, 512, a.chunk):
             if not free_c(e0):
                 continue
@@ -218,18 +302,32 @@ def main():
                 rows = (ids == e).any(1).nonzero().squeeze(1)
                 n = int(rows.numel())
                 G = gu[e - e0, :640].to(dev); U = gu[e - e0, 640:].to(dev); D = dn[e - e0].to(dev)
-                if n:
-                    Xe = X[rows.to(X.device)].to(dev)
-                    Hin = (Xe.float().T @ Xe.float()) / n
-                    A = F.silu(Xe @ G.T) * (Xe @ U.T)
-                    Hdn = (A.float().T @ A.float()) / n
+                if a.hessian_mode == "hard":
+                    if n:
+                        Xe = X[rows.to(X.device)].to(dev)
+                        Hin = (Xe.float().T @ Xe.float()) / n
+                        A = F.silu(Xe @ G.T) * (Xe @ U.T)
+                        Hdn = (A.float().T @ A.float()) / n
+                    else:
+                        Hin = torch.eye(2560, device=dev); Hdn = torch.eye(640, device=dev)
+                elif a.hessian_mode == "softp":
+                    Hin, Hdn = soft_hessians(X, P_soft[:, e], G, U, batch=a.softp_batch)
                 else:
-                    Hin = torch.eye(2560, device=dev); Hdn = torch.eye(640, device=dev)
+                    Hin_s, Hdn_s = soft_hessians(X, P_soft[:, e], G, U, batch=a.softp_batch)
+                    if n:
+                        Xe = X[rows.to(X.device)].to(dev)
+                        Hin_h = (Xe.float().T @ Xe.float()) / n
+                        A = F.silu(Xe @ G.T) * (Xe @ U.T)
+                        Hdn_h = (A.float().T @ A.float()) / n
+                        Hin = blend_hessians(Hin_h, Hin_s, n, a.shrink_n0)
+                        Hdn = blend_hessians(Hdn_h, Hdn_s, n, a.shrink_n0)
+                    else:
+                        Hin, Hdn = Hin_s, Hdn_s
                 jobs_gu += [dict(W=G.float(), H=Hin), dict(W=U.float(), H=Hin)]
                 jobs_dn.append(dict(W=D.float(), H=Hdn))
                 meta.append(dict(e=e, n=n, Hin=Hin, Hdn=Hdn, G=G, U=U, D=D))
-            r_gu = encode.encode_group(jobs_gu, a.bits, seed=a.seed + 7919 * L + 104729 * e0, shared_su=True, damp=a.damp, **refit_kw)
-            r_dn = encode.encode_group(jobs_dn, a.bits, seed=a.seed + 7919 * L + 104729 * e0 + 1, shared_su=True, damp=a.damp, **refit_kw)
+            r_gu = encode.encode_group(jobs_gu, a.bits, seed=a.seed + 7919 * L + 104729 * e0, shared_su=True, damp=a.damp, **refit_kw, **seam_kw)
+            r_dn = encode.encode_group(jobs_dn, a.bits, seed=a.seed + 7919 * L + 104729 * e0 + 1, shared_su=True, damp=a.damp, **refit_kw, **seam_kw)
             keep, rows_out, verify_s = [], [], 0.0
             for i, m in enumerate(meta):
                 rg, ru, rd = r_gu[2 * i], r_gu[2 * i + 1], r_dn[i]
@@ -255,8 +353,17 @@ def main():
             z = dict(format=FORMAT, L=L, K=a.bits, experts=keep, rows=rows_out, seconds=time.time() - tc,
                      verify_seconds=verify_s, decode_check="bitwise BF16 equality of wire.dequant vs What, every matrix",
                      decode_device=gpu, worker=me)
+            enc_meta: dict[str, Any] = {}
             if a.scale_refit:
-                z["encoder"] = dict(scale_refit=True, refit_row_batch=128)
+                enc_meta.update(scale_refit=True, refit_row_batch=128)
+            if a.seam != "htr":
+                enc_meta["seam"] = a.seam
+            if a.hessian_mode != "hard":
+                enc_meta["hessian_mode"] = a.hessian_mode
+                if a.hessian_mode == "shrink":
+                    enc_meta["shrink_n0"] = a.shrink_n0
+            if enc_meta:
+                z["encoder"] = enc_meta
             assert strip_what(z), "reconstruction leaked into a P2 chunk"
             p = os.path.join(od, f"c{e0:03d}.pt")
             torch.save(z, p + ".tmp")

@@ -49,27 +49,34 @@ def write_plan_if_absent(path, value):
 
 
 def check_plan(a, groups, *, publish=False):
-    """Legacy missing flag means unrefit; workers may not relabel existing cache files."""
+    """Legacy missing flags mean unrefit/htr; workers may not relabel existing cache files."""
     enabled = getattr(a, "scale_refit", False)
     if type(enabled) is not bool:
         raise ValueError("scale-refit flag must be boolean")
+    seam = getattr(a, "seam", "htr")
+    if seam not in encode.SEAMS:
+        raise ValueError(f"unknown seam {seam!r}")
     pf = os.path.join(a.cache, "plan.json")
     wanted = dict(groups=groups, bits=a.bits, seed=a.seed, hdir=a.hdir, hmix=a.hmix)
     if enabled:
         wanted.update(scale_refit=True, model=os.path.abspath(a.model), viterbi=a.viterbi)
+    if seam != "htr":
+        wanted["seam"] = seam
     if publish and not os.path.exists(pf):
         if any(glob.glob(os.path.join(a.cache, "g*." + suffix)) for suffix in ("pt", "claim", "tmp")) and not os.path.exists(pf):
             raise ValueError("cache has no plan provenance; use a separate cache")
         os.makedirs(a.cache, exist_ok=True)
         write_plan_if_absent(pf, wanted)
     if not os.path.exists(pf):
-        if enabled:
-            raise ValueError("scale-refit cache requires plan provenance")
+        if enabled or seam != "htr":
+            raise ValueError("non-legacy cache recipe requires plan provenance")
         return {}  # legacy manually assembled caches retain their original path
     with open(pf) as f:
         previous = json.load(f)
     if not isinstance(previous, dict) or type(previous.get("scale_refit", False)) is not bool or previous.get("scale_refit", False) != enabled:
         raise ValueError("scale-refit plan mismatch; use a separate cache")
+    if previous.get("seam", "htr") != seam:
+        raise ValueError("seam plan mismatch; use a separate cache")
     # Assembly may deliberately mix per-group K and need not repeat calibration flags.
     keys = tuple(wanted) if publish else ("groups", "seed") + (() if a.mixed else ("bits",)) + (("model",) if enabled else ())
     if json.dumps({k: previous.get(k) for k in keys}, sort_keys=True) != json.dumps({k: wanted[k] for k in keys}, sort_keys=True):
@@ -80,10 +87,14 @@ def check_plan(a, groups, *, publish=False):
 def check_group(c, g, a, gi):
     """Validate provenance and complete member rosters before assembly writes anything."""
     enabled = getattr(a, "scale_refit", False)
+    seam = getattr(a, "seam", "htr")
     meta = c.get("encoder", {})
     if not isinstance(meta, dict) or type(meta.get("scale_refit", False)) is not bool or meta.get("scale_refit", False) != enabled:
         raise ValueError("scale-refit group recipe mismatch")
-    if enabled and meta != REFIT_RECIPE:
+    if meta.get("seam", "htr") != seam:
+        raise ValueError("seam group recipe mismatch")
+    refit_fields = {k: v for k, v in meta.items() if k != "seam"}
+    if enabled and refit_fields != REFIT_RECIPE:
         raise ValueError("scale-refit group parameters differ")
     if type(c.get("K")) is not int or (enabled and c["K"] not in (2, 3, 4, 5)):
         raise ValueError("scale-refit group width unsupported")
@@ -135,6 +146,9 @@ def cmd_worker(a):
     src = Src(a.model, wm)
     check_plan(a, groups, publish=True)
     refit_kw: dict = dict(REFIT_RECIPE) if getattr(a, "scale_refit", False) else {}
+    seam = getattr(a, "seam", "htr")
+    seam_kw: dict = dict(seam=seam) if seam != "htr" else {}
+    enc_meta: dict = {**refit_kw, **seam_kw}
     host = os.uname().nodename + ":" + torch.cuda.get_device_name(0)
     order = range(len(groups)) if a.order == "up" else range(len(groups) - 1, -1, -1)
     if a.groups:   # bounded canary subset (same cache file names/seeds as the full run, so the canary groups are reused)
@@ -158,16 +172,20 @@ def cmd_worker(a):
             w = src.get(k)
             assert w.dtype == torch.bfloat16 and w.dim() == 2 and w.shape[1] == H.shape[0], (k, w.shape, H.shape)
             jobs.append(dict(W=w.to("cuda").float(), H=H))
-        res = encode.encode_group(jobs, a.bits, seed=a.seed + 104729 * gi, shared_su=True, **refit_kw)
+        res = encode.encode_group(jobs, a.bits, seed=a.seed + 104729 * gi, shared_su=True, **refit_kw, **seam_kw)
         rels = []
         Hd = H.double()
         for jb, r in zip(jobs, res):
             E_ = jb["W"].double() - r["What"].double()
             rels.append(float(((E_ @ Hd) * E_).sum() / ((jb["W"].double() @ Hd) * jb["W"].double()).sum()))
         keep = [{k: r[k].contiguous().cpu() for k in ("qweight", "scales", "su", "sv")} | {"What": r["What"].bfloat16().cpu()} for r in res]
+        extra = {}
+        if enc_meta:
+            extra["encoder"] = dict(enc_meta)
+        if refit_kw:
+            extra["scale_refit"] = [r["scale_refit"] for r in res]
         torch.save(dict(names=g["names"], K=a.bits, seed=a.seed + 104729 * gi, res=keep, rel=rels, host=host,
-                        seconds=time.time() - t,
-                        **(dict(encoder=dict(REFIT_RECIPE), scale_refit=[r["scale_refit"] for r in res]) if refit_kw else {})), cpath + ".tmp")
+                        seconds=time.time() - t, **extra), cpath + ".tmp")
         os.replace(cpath + ".tmp", cpath)
         done += 1
         log(f"group {gi+1}/{len(groups)} L{g['layer']} {g['group']} K{a.bits} rel {['%.5f' % r for r in rels]} {time.time()-t:.0f}s "
@@ -201,6 +219,8 @@ def parse_groups(spec, n):
 def _assemble_one(a, wm, groups, packed, out):
     cache_plan = check_plan(a, groups)
     refit = getattr(a, "scale_refit", False)
+    seam = getattr(a, "seam", "htr")
+    enc_meta = {**(dict(REFIT_RECIPE) if refit else {}), **({"seam": seam} if seam != "htr" else {})}
     src = os.path.abspath(a.model)
     new, report = {}, {}
     gis = list(range(len(groups)))
@@ -277,8 +297,8 @@ def _assemble_one(a, wm, groups, packed, out):
         cfg["quantization_config"]["htr_overlay"] = {"wire": "HTR-W1", "generator": "rdna24", "L": 16, "tile": 16, "rht_block": 128,
                                                      "vllm_prefix": "language_model.model.layers.",
                                                      "modules": {k: {"K": v["K"]} for k, v in report.items()}}
-        if refit:
-            cfg["quantization_config"]["htr_overlay"]["encoder"] = dict(REFIT_RECIPE)
+        if enc_meta:
+            cfg["quantization_config"]["htr_overlay"]["encoder"] = dict(enc_meta)
     json.dump(cfg, open(os.path.join(tmp, "config.json"), "w"), indent=2)
     nq = sum(v["shape"][0] * v["shape"][1] for v in report.values())
     bits = sum(v["shape"][0] * v["shape"][1] * v["K"] + 16 * v["shape"][0] + (v["shape"][0] + v["shape"][1]) for v in report.values())
@@ -287,7 +307,7 @@ def _assemble_one(a, wm, groups, packed, out):
                    target_params=nq, target_bpw=bits / nq, affected_shards=affected, total_bytes=total,
                    mean_rel_proxy=sum(v["rel_proxy"] for v in report.values()) / len(report),
                    encode_seconds=sum(v["seconds"] for v in report.values()),
-                   **(dict(encoder=dict(REFIT_RECIPE)) if refit else {})),
+                   **(dict(encoder=dict(enc_meta)) if enc_meta else {})),
               open(os.path.join(tmp, "htr_report.json"), "w"), indent=1)
     os.rename(tmp, out)
     log(f"{'packed' if packed else 'fake'} -> {out} total {total/1e9:.3f} GB target {nq/1e6:.1f}M params {bits/nq:.4f} bpw")
@@ -314,6 +334,8 @@ def main():
     ap.add_argument("--cache", required=True)
     ap.add_argument("--order", default="up", choices=["up", "down"])
     ap.add_argument("--viterbi", default="auto", choices=["auto", "v1", "ref"])
+    ap.add_argument("--seam", default="htr", choices=list(encode.SEAMS),
+                    help="tail-biting Viterbi seam rule (default htr preserves legacy caches; qtip is opt-in)")
     ap.add_argument("--out", default=None)
     ap.add_argument("--fake-out", default=None)
     ap.add_argument("--groups", default=None, help="worker: encode only these group indices, e.g. 0-3,12-16")
@@ -322,6 +344,8 @@ def main():
     a = ap.parse_args()
     if a.scale_refit and a.bits not in (2, 3, 4, 5) and (a.cmd == "worker" or not a.mixed):
         ap.error("--scale-refit supports K2..K5 only")
+    if a.seam != "htr" and a.viterbi == "v1":
+        ap.error("--seam qtip requires --viterbi auto or ref (v1 supports htr only)")
     {"worker": cmd_worker, "assemble": cmd_assemble}[a.cmd](a)
 
 
